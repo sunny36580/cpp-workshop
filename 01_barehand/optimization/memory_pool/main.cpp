@@ -3,7 +3,7 @@
 #include <thread>
 #include <vector>
 #include "frame.h"
-#include "pool.h"
+#include "lockfree_pool.h"
 
 using Clock = std::chrono::high_resolution_clock;
 
@@ -19,7 +19,7 @@ void test_new_delete(size_t N) {
     auto start = now_ms();
 
     for (size_t i = 0; i < N; ++i) {
-        Frame* f = new Frame();
+        auto f = new Frame();
         // 模拟访问，防止被优化
         f->data[0] = static_cast<char>(i);
         delete f;
@@ -33,14 +33,14 @@ void test_new_delete(size_t N) {
 // 实验2：对象池（单线程）
 // ==========================
 void test_pool_single(size_t N) {
-    ObjectPool<Frame> pool(1024);
+    LockFreePool<Frame> pool(1024);
 
     auto start = now_ms();
 
     for (size_t i = 0; i < N; ++i) {
-        Frame* f = pool.acquire();
+        auto f = pool.acquire_shared();
         f->data[0] = static_cast<char>(i);
-        pool.release(f);
+        // pool.release(f);
     }
 
     auto end = now_ms();
@@ -51,7 +51,7 @@ void test_pool_single(size_t N) {
 // 实验3：对象池（多线程）
 // ==========================
 void test_pool_multi(size_t N, int threads) {
-    ObjectPool<Frame> pool(1024);
+    LockFreePool<Frame> pool(1024);
 
     auto start = now_ms();
 
@@ -61,9 +61,9 @@ void test_pool_multi(size_t N, int threads) {
     for (int t = 0; t < threads; ++t) {
         ts.emplace_back([&]() {
             for (size_t i = 0; i < per_thread; ++i) {
-                Frame* f = pool.acquire();
+                auto f = pool.acquire_shared();
                 f->data[0] = static_cast<char>(i);
-                pool.release(f);
+                // pool.release(f);
             }
         });
     }

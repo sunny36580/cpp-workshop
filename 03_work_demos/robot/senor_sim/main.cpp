@@ -4,6 +4,8 @@
 #include "core/Fusion.h"
 #include "core/Monitor.h"
 #include "core/Tracker.h"
+#include "core/Preprocess.h"
+#include "core/WorldModel.h"
 #include <mutex>
 #include <csignal>
 #include <atomic>
@@ -42,37 +44,38 @@ int main() {
         sync.add_lidar(f);
     });
 
-    // 初始化跟踪器（新增）
     Tracker tracker;
-    const float dt = 0.02f;  // 20ms 步长
+    ObjectFusion object_fusion;
+    const float dt = 0.02f;
 
-    // 主循环：完整工程级感知Pipeline
     while (g_running) {
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
         std::lock_guard<std::mutex> lock(mtx);
 
-        // ===================== 原有模块 =====================
-        // 1. 时间同步
+        // 1. 同步
         auto bundle = sync.sync();
         if (!bundle) continue;
 
-        // 掉线告警（原有）
-        if (!monitor.is_alive("camera", 200)) LOG_ERROR("Camera sensor DEAD!");
-        if (!monitor.is_alive("lidar", 300)) LOG_ERROR("Lidar sensor DEAD!");
+        // 2. 传感器监控
+        bool cam_ok = monitor.is_alive("camera", 200);
+        bool lidar_ok = monitor.is_alive("lidar", 300);
+        if (!cam_ok) LOG_ERROR("Camera DEAD");
+        if (!lidar_ok) LOG_ERROR("Lidar DEAD");
 
-        // ===================== 新增智能层 =====================
-        // 2. 模拟目标检测（对接传感器数据）
-        std::vector<Detection> detections;
+        // 3. 预处理
+        if (!Preprocessor::process(*bundle)) continue;
+
+        // 4. 检测
+        std::vector<Detection> dets;
         if (bundle->image || bundle->lidar) {
-            // 模拟2D检测目标（真实项目替换为AI检测）
-            detections.push_back({3.1f + (rand()%100)/100.0f, 2.5f + (rand()%100)/100.0f});
+            dets.push_back({3.1f + (rand()%100)/100.0f, 2.5f + (rand()%100)/100.0f});
         }
 
-        // 3. 多目标跟踪 + 卡尔曼预测（抗掉线核心）
-        tracker.update(detections, dt);
+        // 5. 跟踪 + 卡尔曼
+        tracker.update(dets, dt);
 
-        // 4. 融合输出（给上层的稳定数据）
-        fusion.process(tracker.get_tracks());
+        // 6. 目标级融合 + 世界模型
+        WorldModel model = object_fusion.fuse(tracker.get_tracks(), cam_ok, lidar_ok);
     }
 
     LOG_INFO("System stopped safely");

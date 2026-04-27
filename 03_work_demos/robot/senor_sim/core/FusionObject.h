@@ -29,7 +29,7 @@ private:
         LOG_INFO("相机: " << (m.camera_alive ? "OK" : "DEAD")
                  << " 雷达: " << (m.lidar_alive ? "OK" : "DEAD"));
         for (auto& t : m.fused_objects) {
-            LOG_INFO("ID:" << t.track_id << " (" << t.x << "," << t.y << ") "
+            LOG_INFO("ID:" << " (" << t.x << "," << t.y << ") "
                      << (t.is_predicted ? "[预测]" : "[正常]"));
         }
         LOG_INFO("=======================\n");

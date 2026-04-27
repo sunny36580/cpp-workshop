@@ -1,19 +1,15 @@
 #pragma once
-#include <string>
 #include <cstdint>
+#include <memory>
 
-// 基础数据帧
 struct Frame {
-    int64_t ts;        // 时间戳
-    std::string frame_id;
+    int64_t ts = 0;
+    int id = 0;
 };
 
-// 相机图像帧
-struct ImageFrame : Frame {
-    int id = 0;        // 帧序号
-};
+struct ImageFrame : public Frame {};
+struct LidarFrame : public Frame {};
 
-// 激光雷达帧
-struct LidarFrame : Frame {
-    int id = 0;        // 帧序号
-};
+// 新增
+using ImageFramePtr = std::shared_ptr<ImageFrame>;
+using LidarFramePtr = std::shared_ptr<LidarFrame>;

@@ -6,7 +6,6 @@
 #include "core/Tracker.h"
 #include "core/Preprocess.h"
 #include "core/WorldModel.h"
-#include <mutex>
 #include <csignal>
 #include <atomic>
 #include <iostream>
@@ -17,40 +16,37 @@ std::atomic<bool> g_running = true;
 // Ctrl+C 信号处理
 void signal_handler(int) {
     g_running = false;
+    LOG_INFO("收到退出信号，正在关闭系统...");
 }
 
 int main() {
     signal(SIGINT, signal_handler);
-    LOG_INFO("Sensor fusion system started...");
+    LOG_INFO("===== 多传感器融合系统启动 =====");
 
     CameraSensor cam;
     LidarSensor lidar;
     ApproxSync sync;
-    Fusion fusion;
     SensorMonitor monitor;
-    std::mutex mtx;
+    Tracker tracker;
+    ObjectFusion object_fusion;
 
     // 相机数据回调
-    cam.start([&](const ImageFrame& f) {
-        std::lock_guard<std::mutex> lock(mtx);
+    cam.start([&](ImageFramePtr f) {
         monitor.update("camera");
-        sync.add_image(f);
+        sync.add_image(std::move(f));
     });
 
     // 雷达数据回调
-    lidar.start([&](const LidarFrame& f) {
-        std::lock_guard<std::mutex> lock(mtx);
+    lidar.start([&](LidarFramePtr f) {
         monitor.update("lidar");
-        sync.add_lidar(f);
+        sync.add_lidar(std::move(f));
     });
 
-    Tracker tracker;
-    ObjectFusion object_fusion;
     const float dt = 0.02f;
+    int print_counter = 0;
 
     while (g_running) {
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
-        std::lock_guard<std::mutex> lock(mtx);
 
         // 1. 同步
         auto bundle = sync.sync();
@@ -59,8 +55,6 @@ int main() {
         // 2. 传感器监控
         bool cam_ok = monitor.is_alive("camera", 200);
         bool lidar_ok = monitor.is_alive("lidar", 300);
-        if (!cam_ok) LOG_ERROR("Camera DEAD");
-        if (!lidar_ok) LOG_ERROR("Lidar DEAD");
 
         // 3. 预处理
         if (!Preprocessor::process(*bundle)) continue;
@@ -75,9 +69,11 @@ int main() {
         tracker.update(dets, dt);
 
         // 6. 目标级融合 + 世界模型
-        WorldModel model = object_fusion.fuse(tracker.get_tracks(), cam_ok, lidar_ok);
+        if (print_counter++ % 5 == 0) {
+            WorldModel model = object_fusion.fuse(tracker.get_tracks(), cam_ok, lidar_ok);
+        }
     }
 
-    LOG_INFO("System stopped safely");
+    LOG_INFO("===== 系统安全退出 =====");
     return 0;
 }

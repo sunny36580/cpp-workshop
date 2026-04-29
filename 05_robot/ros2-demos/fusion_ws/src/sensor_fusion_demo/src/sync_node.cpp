@@ -15,7 +15,6 @@ class SyncNode : public rclcpp::Node
 public:
     SyncNode() : Node("sync_node")
     {
-        // ====================== 修复 QoS 兼容问题 ======================
         // 传感器话题统一使用 BEST_EFFORT
         auto qos_profile = rclcpp::QoS(10).best_effort();
 
@@ -23,7 +22,6 @@ public:
         cam_sub_.subscribe(this, "camera_topic", qos_profile.get_rmw_qos_profile());
         lidar_sub_.subscribe(this, "lidar_topic", qos_profile.get_rmw_qos_profile());
 
-        // ====================== 修复同步器初始化 ======================
         // 时间同步策略（近似时间同步）
         using SyncPolicy = mf::sync_policies::ApproximateTime<ImageMsg, LidarMsg>;
         sync_ = std::make_shared<mf::Synchronizer<SyncPolicy>>(SyncPolicy(10), cam_sub_, lidar_sub_);

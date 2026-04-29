@@ -1,0 +1,20 @@
+syntax = "proto3";
+
+package message;
+
+message Imu {
+    double angular_velocity_x = 1;    // 角速度 x
+    double angular_velocity_y = 2;    // 角速度 y
+    double angular_velocity_z = 3;    // 角速度 z
+
+    double linear_acceleration_x = 4; // 线加速度 x
+    double linear_acceleration_y = 5; // 线加速度 y
+    double linear_acceleration_z = 6; // 线加速度 z
+
+    double orientation_x = 7;         // 四元数
+    double orientation_y = 8;
+    double orientation_z = 9;
+    double orientation_w = 10;
+
+    int64 timestamp = 11;             // 时间戳
+}

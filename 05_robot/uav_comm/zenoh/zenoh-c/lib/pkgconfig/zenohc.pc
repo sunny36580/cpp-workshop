@@ -1,0 +1,8 @@
+prefix=/home/zsh/tmp/test/zenoh-c/build/install
+
+Name: zenohc
+Description: The C bindings for Zenoh
+URL: https://github.com/eclipse-zenoh/zenoh-c
+Version: 1.7.0
+Cflags: -I${prefix}/include
+Libs: -L${prefix}/lib -lzenohc

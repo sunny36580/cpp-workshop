@@ -46,7 +46,7 @@ private:
     size_t max_size_; // 队列容量上限（解决堆积）
 };
 
-// 核心：设置队列容量=10（小容量，防止堆积，延迟极低）
+// 核心：设置队列容量=10（小容量，防止堆积，延迟极低），队列多大会导致延迟增大
 SafeQueue<Frame> q1{10};  // Simulator -> Detect
 SafeQueue<Frame> q2{10};  // Detect -> Sink
 
@@ -68,11 +68,14 @@ void simulator_thread() {
         // 推入队列
         q1.push(move(frame));
         // 调整：生产速度 ≈ 消费速度（1ms发1帧）
-        this_thread::sleep_for(microseconds(1000));
+        // this_thread::sleep_for(microseconds(1000));
+        // 上游生产过多，下游无法及时消费，导致堆积，延迟增大
+        this_thread::sleep_for(microseconds(2000));
     }
 }
 
 // ===================== 4. 线程2：检测模块(AI/算法处理) =====================
+// 检测耗时慢，上游生产快，下游消费慢，导致堆积，延迟增大
 void detect_thread() {
     Frame frame;
     while (g_running) {
@@ -132,7 +135,7 @@ int main() {
     thread sk_thread(sink_thread);
 
     // 运行10秒后自动退出
-    this_thread::sleep_for(seconds(10));
+    this_thread::sleep_for(seconds(30));
     g_running = false;
 
     // 等待线程结束

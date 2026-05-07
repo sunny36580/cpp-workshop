@@ -16,12 +16,19 @@ struct Frame {
     float simulate_data;    // 模拟感知数据
 };
 
-// ===================== 2. 线程安全队列(Mutex版) =====================
+// ===================== 2. 线程安全队列(有界队列 + 背压) =====================
 template<typename T>
 class SafeQueue {
 public:
+    // 构造：指定队列最大容量（有界队列）, 无界队列必然导致延迟爆炸、内存爆炸
+    explicit SafeQueue(size_t max_size) : max_size_(max_size) {}
+
     void push(T&& v) {
         lock_guard<mutex> lk(mtx_);
+        // 工业级背压：队列满了 → 丢弃最旧的帧，保证最新帧能入队。背压是系统生命线
+        while (q_.size() >= max_size_) {
+            q_.pop();
+        }
         q_.push(move(v));
     }
 
@@ -36,16 +43,17 @@ public:
 private:
     queue<T> q_;
     mutex mtx_;
+    size_t max_size_; // 队列容量上限（解决堆积）
 };
 
-// 全局队列（Pipeline链路）
-SafeQueue<Frame> q1;  // Simulator -> Detect
-SafeQueue<Frame> q2;  // Detect -> Sink
+// 核心：设置队列容量=10（小容量，防止堆积，延迟极低）
+SafeQueue<Frame> q1{10};  // Simulator -> Detect
+SafeQueue<Frame> q2{10};  // Detect -> Sink
 
 // 全局退出标志
 atomic<bool> g_running{true};
 
-// ===================== 3. 线程1：数据模拟器(相机/传感器) =====================
+// ===================== 3. 线程1：数据模拟器 =====================
 void simulator_thread() {
     int frame_id = 0;
     while (g_running) {
@@ -59,9 +67,8 @@ void simulator_thread() {
 
         // 推入队列
         q1.push(move(frame));
-
-        // 模拟高频率采集(可调整)
-        this_thread::sleep_for(microseconds(500));
+        // 调整：生产速度 ≈ 消费速度（1ms发1帧）
+        this_thread::sleep_for(microseconds(1000));
     }
 }
 
@@ -99,8 +106,7 @@ void sink_thread() {
 
             // 每秒打印一次统计
             auto now = system_clock::now();
-            auto duration = duration_cast<seconds>(now - last_time);
-            if (duration.count() >= 1) {
+            if (duration_cast<seconds>(now - last_time).count() >= 1) {
                 float avg_latency = (total_latency / 1000.0f) / count;
                 cout << "=====================================" << endl;
                 cout << "FPS: " << count << endl;

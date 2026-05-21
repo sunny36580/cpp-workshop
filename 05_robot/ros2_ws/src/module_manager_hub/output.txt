@@ -116,18 +116,30 @@ int main(int argc, char *argv[]) {
 #include <cstdlib>
 #include <ctime>
 #include <sys/wait.h>
+#include <signal.h>
+#include <algorithm>
 
 using namespace std::chrono_literals;
 
+// 全局信号处理
+ModuleManager* g_module_manager = nullptr;
+void signalHandler(int sig) {
+  if (g_module_manager) {
+    g_module_manager->handleShutdownSignal(sig);
+  }
+}
+
 ModuleManager::ModuleManager(const std::string &name) : Node(name)
 {
+  g_module_manager = this;
+  
   status_pub_ = this->create_publisher<module_manager_hub::msg::ModuleStatus>("/robot/modules_status", 10);
   ctrl_srv_ = this->create_service<module_manager_hub::srv::ModuleControl>(
     "/robot/module_control",
     std::bind(&ModuleManager::moduleControlCallback, this, std::placeholders::_1, std::placeholders::_2)
   );
 
-  // 从参数中获取配置文件路径，默认使用测试配置
+  // 从参数中获取配置文件路径
   std::string config_path;
   this->declare_parameter<std::string>("config_path", "config/modules.yaml");
   config_path = this->get_parameter("config_path").as_string();
@@ -135,9 +147,19 @@ ModuleManager::ModuleManager(const std::string &name) : Node(name)
   RCLCPP_INFO(this->get_logger(), "加载配置文件: %s", config_path.c_str());
   loadConfig(config_path);
 
-  // 启动监控定时器
-  monitor_timer_ = this->create_wall_timer(500ms, std::bind(&ModuleManager::monitorTimerCallback, this));
-  RCLCPP_INFO(this->get_logger(), "人形机器人模块管理中枢 启动就绪");
+  // 注册信号处理
+  signal(SIGINT, signalHandler);
+  signal(SIGTERM, signalHandler);
+
+  // 启动监控定时器（100ms精度）
+  monitor_timer_ = this->create_wall_timer(100ms, std::bind(&ModuleManager::monitorTimerCallback, this));
+  
+  RCLCPP_INFO(this->get_logger(), "✅ 人形机器人模块管理中枢 启动就绪");
+}
+
+ModuleManager::~ModuleManager()
+{
+  gracefulShutdown();
 }
 
 void ModuleManager::loadConfig(const std::string &path)
@@ -153,76 +175,171 @@ void ModuleManager::loadConfig(const std::string &path)
     m.enabled = entry.second["enabled"].as<bool>();
     m.auto_start = entry.second["auto_start"].as<bool>();
     m.heartbeat_timeout = entry.second["heartbeat_timeout"].as<double>();
-    m.last_heartbeat = this->now().seconds();
+    
+    // 新增：加载依赖
+    if (entry.second["depends"]) {
+      m.depends = entry.second["depends"].as<std::vector<std::string>>();
+    }
+    
+    // 新增：加载启动超时
+    if (entry.second["startup_timeout"]) {
+      m.startup_timeout = entry.second["startup_timeout"].as<double>();
+    }
+    
+    // 新增：加载重启配置
+    if (entry.second["max_restart_count"]) {
+      m.max_restart_count = entry.second["max_restart_count"].as<int>();
+    }
+
     modules_[m.name] = m;
 
-    RCLCPP_INFO(this->get_logger(), "加载模块配置: %s (%s)", m.name.c_str(), m.node_name.c_str());
+    RCLCPP_INFO(this->get_logger(), "加载模块配置: %s (依赖: %zu个)", 
+                m.name.c_str(), m.depends.size());
 
     // 自动创建心跳订阅
-    auto sub = this->create_subscription<std_msgs::msg::Empty>(
+    auto heart_sub = this->create_subscription<std_msgs::msg::Empty>(
       m.monitor_topic, 10,
       [this, name=m.name](const std_msgs::msg::Empty::SharedPtr msg){
         this->heartbeatCallback(msg, name);
       }
     );
-    heart_subs_[m.name] = sub;
+    heart_subs_[m.name] = heart_sub;
 
-    // 自动启动
+    // 新增：自动创建就绪订阅
+    std::string ready_topic = "/" + m.name + "/ready";
+    auto ready_sub = this->create_subscription<std_msgs::msg::Empty>(
+      ready_topic, 10,
+      [this, name=m.name](const std_msgs::msg::Empty::SharedPtr msg){
+        this->readyCallback(msg, name);
+      }
+    );
+    ready_subs_[m.name] = ready_sub;
+
+    // 自动启动（加入队列）
     if(m.enabled && m.auto_start)
     {
-      startModule(m.name);
+      startup_queue_.push(m.name);
     }
   }
 }
 
-// 心跳刷新时间
+// 就绪回调：模块初始化完成后发送
+void ModuleManager::readyCallback(const std_msgs::msg::Empty::SharedPtr, const std::string &mod_name)
+{
+  if(!modules_.count(mod_name)) return;
+  
+  auto &m = modules_[mod_name];
+  if (m.state == ModuleState::LOADING) {
+    m.state = ModuleState::READY;
+    m.restart_count = 0; // 启动成功，重置重启计数
+    RCLCPP_INFO(this->get_logger(), "✅ 模块 %s 就绪", mod_name.c_str());
+    
+    // 继续处理启动队列
+    processStartupQueue();
+  }
+}
+
+// 心跳回调：运行中定期发送
 void ModuleManager::heartbeatCallback(const std_msgs::msg::Empty::SharedPtr, const std::string &mod_name)
 {
-  if(modules_.count(mod_name))
-  {
-    modules_[mod_name].last_heartbeat = this->now().seconds();
-    modules_[mod_name].online = true;
-    modules_[mod_name].running = true;
+  if(!modules_.count(mod_name)) return;
+  
+  auto &m = modules_[mod_name];
+  if (m.state == ModuleState::READY || m.state == ModuleState::RUNNING) {
+    m.last_heartbeat = this->now().seconds();
+    m.state = ModuleState::RUNNING;
   }
 }
 
-// 定时巡检：超时判定离线
-void ModuleManager::monitorTimerCallback()
+// 处理启动队列：按依赖顺序启动
+void ModuleManager::processStartupQueue()
 {
-  double now_sec = this->now().seconds();
-  for(auto &pair : modules_)
-  {
-    auto &m = pair.second;
-    if(!m.enabled) continue;
+  if (startup_queue_.empty()) {
+    processing_startup_ = false;
+    return;
+  }
+  
+  processing_startup_ = true;
+  std::string next_module = startup_queue_.front();
+  
+  if (!modules_.count(next_module)) {
+    startup_queue_.pop();
+    processStartupQueue();
+    return;
+  }
+  
+  auto &m = modules_[next_module];
+  
+  // 检查依赖是否全部就绪
+  if (!checkDependenciesReady(next_module)) {
+    // 依赖未就绪，放到队列尾部继续等待
+    startup_queue_.pop();
+    startup_queue_.push(next_module);
+    return;
+  }
+  
+  // 依赖全部就绪，启动模块
+  startup_queue_.pop();
+  startModule(next_module);
+}
 
-    double diff = now_sec - m.last_heartbeat;
-    if(diff > m.heartbeat_timeout)
-    {
-      m.online = false;
-      m.running = false;
-      // 可开启自动重启
-      // restartModule(pair.first);
+// 检查模块的所有依赖是否都已就绪
+bool ModuleManager::checkDependenciesReady(const std::string &name)
+{
+  if (!modules_.count(name)) return false;
+  
+  auto &m = modules_[name];
+  for (const auto &dep : m.depends) {
+    if (!modules_.count(dep)) {
+      RCLCPP_ERROR(this->get_logger(), "❌ 模块 %s 依赖不存在: %s", name.c_str(), dep.c_str());
+      return false;
+    }
+    
+    auto &dep_mod = modules_[dep];
+    if (dep_mod.state != ModuleState::READY && dep_mod.state != ModuleState::RUNNING) {
+      RCLCPP_DEBUG(this->get_logger(), "模块 %s 等待依赖: %s (状态: %d)", 
+                   name.c_str(), dep.c_str(), (int)dep_mod.state);
+      return false;
     }
   }
-  publishModuleStatus();
+  
+  return true;
 }
 
-// 启动ROS2节点
+// 启动模块（真正的工业级实现）
 bool ModuleManager::startModule(const std::string &name)
 {
   if (!modules_.count(name)) {
-    RCLCPP_ERROR(this->get_logger(), "模块 %s 不存在", name.c_str());
+    RCLCPP_ERROR(this->get_logger(), "❌ 模块 %s 不存在", name.c_str());
     return false;
   }
 
   auto &m = modules_[name];
-  if (m.pid > 0) {
-    RCLCPP_WARN(this->get_logger(), "模块 %s 已在运行", name.c_str());
+  
+  // 检查状态
+  if (m.state == ModuleState::LOADING || m.state == ModuleState::READY || m.state == ModuleState::RUNNING) {
+    RCLCPP_WARN(this->get_logger(), "⚠️ 模块 %s 已在运行", name.c_str());
     return true;
   }
+  
+  // 检查是否达到最大重启次数
+  if (m.restart_count >= m.max_restart_count) {
+    RCLCPP_ERROR(this->get_logger(), "❌ 模块 %s 已达到最大重启次数(%d)，标记为永久故障", 
+                 name.c_str(), m.max_restart_count);
+    m.state = ModuleState::ERROR;
+    m.error_message = "达到最大重启次数";
+    return false;
+  }
 
-  RCLCPP_INFO(this->get_logger(), "启动子节点: ros2 run %s %s",
-              m.package_name.c_str(), m.node_name.c_str());
+  RCLCPP_INFO(this->get_logger(), "🚀 启动模块: %s (第%d次尝试)", 
+              name.c_str(), m.restart_count + 1);
+
+  // 清理旧进程
+  if (m.pid > 0) {
+    kill(m.pid, SIGKILL);
+    waitpid(m.pid, nullptr, 0);
+    m.pid = -1;
+  }
 
   pid_t pid = fork();
   if (pid == 0) {
@@ -231,53 +348,235 @@ bool ModuleManager::startModule(const std::string &name)
            m.package_name.c_str(),
            m.node_name.c_str(),
            (char*)NULL);
+    RCLCPP_FATAL(this->get_logger(), "❌ 执行 ros2 run 失败: %s", strerror(errno));
     exit(1);
   }
   else if (pid > 0) {
-    // 只记录PID，不判断是否启动成功
     m.pid = pid;
+    m.state = ModuleState::LOADING;
+    m.startup_time = this->now().seconds();
+    m.last_heartbeat = this->now().seconds();
     return true;
   }
   else {
-    RCLCPP_ERROR(this->get_logger(), "fork 进程失败");
+    RCLCPP_ERROR(this->get_logger(), "❌ fork 进程失败: %s", strerror(errno));
     return false;
   }
 }
 
-
-// 停止节点
+// 停止模块（优雅关闭）
 bool ModuleManager::stopModule(const std::string &name)
 {
   if (!modules_.count(name)) return false;
   auto &m = modules_[name];
 
-  if (m.pid <= 0) {
-    RCLCPP_WARN(this->get_logger(), "模块 %s 未运行", name.c_str());
+  if (m.state == ModuleState::UNLOADED || m.state == ModuleState::STOPPED) {
     return true;
   }
 
-  RCLCPP_INFO(this->get_logger(), "停止模块 %s，PID=%d", name.c_str(), m.pid);
+  RCLCPP_INFO(this->get_logger(), "⏹️ 停止模块: %s", name.c_str());
 
-  // 真正杀死进程
-  if (kill(m.pid, SIGTERM) == 0) {
-    m.pid = -1;
-    m.running = false;
-    m.online = false;
-    return true;
-  } else {
-    RCLCPP_ERROR(this->get_logger(), "杀死进程失败");
-    return false;
+  if (m.pid > 0) {
+    // 先发送SIGTERM，给2秒优雅关闭时间
+    if (kill(m.pid, SIGTERM) == 0) {
+      double start_time = this->now().seconds();
+      while (this->now().seconds() - start_time < 2.0) {
+        int status;
+        if (waitpid(m.pid, &status, WNOHANG) == m.pid) {
+          break;
+        }
+        std::this_thread::sleep_for(10ms);
+      }
+    }
+    
+    // 强制杀死
+    if (kill(m.pid, SIGKILL) == 0) {
+      waitpid(m.pid, nullptr, 0);
+    }
   }
+
+  m.pid = -1;
+  m.state = ModuleState::STOPPED;
+  m.error_message.clear();
+  RCLCPP_INFO(this->get_logger(), "✅ 模块 %s 已停止", name.c_str());
+  return true;
 }
 
 bool ModuleManager::restartModule(const std::string &name)
 {
   stopModule(name);
-  rclcpp::sleep_for(1s);
+  // 等待重启冷却时间
+  if (modules_.count(name)) {
+    auto &m = modules_[name];
+    if (m.restart_count < m.restart_intervals.size()) {
+      double delay = m.restart_intervals[m.restart_count];
+      if (delay > 0) {
+        RCLCPP_INFO(this->get_logger(), "⏱️ 等待 %.1f 秒后重启模块 %s", delay, name.c_str());
+        std::this_thread::sleep_for(std::chrono::duration<double>(delay));
+      }
+    }
+    m.restart_count++;
+  }
   return startModule(name);
 }
 
-// 外部服务控制
+// 处理模块故障
+void ModuleManager::handleModuleFailure(const std::string &name, const std::string &reason)
+{
+  if (!modules_.count(name)) return;
+  
+  auto &m = modules_[name];
+  RCLCPP_ERROR(this->get_logger(), "❌ 模块 %s 故障: %s", name.c_str(), reason.c_str());
+  
+  m.state = ModuleState::ERROR;
+  m.error_message = reason;
+  
+  // 停止所有依赖它的模块
+  for (auto &pair : modules_) {
+    auto &mod = pair.second;
+    if (std::find(mod.depends.begin(), mod.depends.end(), name) != mod.depends.end()) {
+      if (mod.state == ModuleState::READY || mod.state == ModuleState::RUNNING) {
+        RCLCPP_WARN(this->get_logger(), "⚠️ 依赖模块 %s 故障，停止 %s", name.c_str(), mod.name.c_str());
+        stopModule(mod.name);
+      }
+    }
+  }
+  
+  // 尝试重启
+  if (m.restart_count < m.max_restart_count) {
+    RCLCPP_INFO(this->get_logger(), "🔄 尝试重启模块 %s (%d/%d)", 
+                name.c_str(), m.restart_count + 1, m.max_restart_count);
+    restartModule(name);
+  } else {
+    RCLCPP_FATAL(this->get_logger(), "💀 模块 %s 永久故障，无法恢复", name.c_str());
+  }
+}
+
+// 主监控循环（100ms一次）
+void ModuleManager::monitorTimerCallback()
+{
+  double now_sec = this->now().seconds();
+  
+  // 处理启动队列
+  if (!processing_startup_ && !startup_queue_.empty()) {
+    processStartupQueue();
+  }
+  
+  // 巡检所有模块
+  for(auto &pair : modules_)
+  {
+    auto &m = pair.second;
+    if(!m.enabled) continue;
+
+    // 检查启动超时
+    if (m.state == ModuleState::LOADING) {
+      if (now_sec - m.startup_time > m.startup_timeout) {
+        handleModuleFailure(m.name, "启动超时");
+        continue;
+      }
+    }
+
+    // 检查心跳超时
+    if (m.state == ModuleState::RUNNING) {
+      double diff = now_sec - m.last_heartbeat;
+      if(diff > m.heartbeat_timeout) {
+        handleModuleFailure(m.name, "心跳超时");
+        continue;
+      }
+    }
+
+    // 检查进程是否意外退出
+    if (m.pid > 0) {
+      int status;
+      if (waitpid(m.pid, &status, WNOHANG) == m.pid) {
+        std::string reason = "进程意外退出";
+        if (WIFEXITED(status)) {
+          reason += " (退出码: " + std::to_string(WEXITSTATUS(status)) + ")";
+        } else if (WIFSIGNALED(status)) {
+          reason += " (信号: " + std::to_string(WTERMSIG(status)) + ")";
+        }
+        handleModuleFailure(m.name, reason);
+      }
+    }
+  }
+  
+  // 发布状态
+  publishModuleStatus();
+}
+
+// 优雅关闭整个系统
+void ModuleManager::gracefulShutdown()
+{
+  RCLCPP_INFO(this->get_logger(), "🛑 开始优雅关闭系统");
+  
+  // 按依赖逆序停止：先停叶子节点，最后停根节点
+  std::vector<std::string> stop_order;
+  std::unordered_set<std::string> stopped;
+  
+  // 拓扑排序：逆序
+  while (stop_order.size() < modules_.size()) {
+    for (auto &pair : modules_) {
+      auto &m = pair.second;
+      if (stopped.count(m.name)) continue;
+      
+      // 检查所有依赖它的模块是否都已停止
+      bool can_stop = true;
+      for (auto &p : modules_) {
+        auto &mod = p.second;
+        if (stopped.count(mod.name)) continue;
+        if (std::find(mod.depends.begin(), mod.depends.end(), m.name) != mod.depends.end()) {
+          can_stop = false;
+          break;
+        }
+      }
+      
+      if (can_stop) {
+        stop_order.push_back(m.name);
+        stopped.insert(m.name);
+      }
+    }
+  }
+  
+  // 按顺序停止
+  for (const auto &name : stop_order) {
+    stopModule(name);
+  }
+  
+  RCLCPP_INFO(this->get_logger(), "✅ 系统优雅关闭完成");
+}
+
+void ModuleManager::handleShutdownSignal(int sig)
+{
+  RCLCPP_INFO(this->get_logger(), "收到信号 %d，开始关闭", sig);
+  gracefulShutdown();
+  rclcpp::shutdown();
+}
+
+void ModuleManager::publishModuleStatus()
+{
+  for(auto &pair : modules_)
+  {
+    auto &m = pair.second;
+    module_manager_hub::msg::ModuleStatus msg;
+    msg.name = m.name;
+    msg.online = (m.state == ModuleState::READY || m.state == ModuleState::RUNNING);
+    msg.running = (m.state == ModuleState::RUNNING);
+    msg.last_heartbeat = m.last_heartbeat;
+    
+    // 状态消息
+    switch (m.state) {
+      case ModuleState::UNLOADED: msg.state_msg = "UNLOADED"; break;
+      case ModuleState::LOADING: msg.state_msg = "LOADING"; break;
+      case ModuleState::READY: msg.state_msg = "READY"; break;
+      case ModuleState::RUNNING: msg.state_msg = "RUNNING"; break;
+      case ModuleState::ERROR: msg.state_msg = "ERROR: " + m.error_message; break;
+      case ModuleState::STOPPED: msg.state_msg = "STOPPED"; break;
+    }
+    
+    status_pub_->publish(msg);
+  }
+}
+
 void ModuleManager::moduleControlCallback(
   const std::shared_ptr<module_manager_hub::srv::ModuleControl::Request> req,
   std::shared_ptr<module_manager_hub::srv::ModuleControl::Response> res)
@@ -288,45 +587,103 @@ void ModuleManager::moduleControlCallback(
     res->message = "模块不存在";
     return;
   }
+  
+  auto &m = modules_[req->module_name];
+  
   switch (req->cmd)
   {
-    case 1: res->success = startModule(req->module_name); res->message="启动完成";break;
-    case 2: res->success = stopModule(req->module_name); res->message="停止完成";break;
-    case 3: res->success = restartModule(req->module_name); res->message="重启完成";break;
-    default: res->message="未知指令";break;
-  }
-}
-
-void ModuleManager::publishModuleStatus()
-{
-  for(auto &pair : modules_)
-  {
-    auto &m = pair.second;
-    module_manager_hub::msg::ModuleStatus msg;
-    msg.name = m.name;
-    msg.online = m.online;
-    msg.running = m.running;
-    msg.last_heartbeat = m.last_heartbeat;
-    msg.state_msg = m.online ? "NORMAL" : "ABNORMAL";
-    status_pub_->publish(msg);
+    case 1: 
+      if (m.state == ModuleState::ERROR && m.restart_count >= m.max_restart_count) {
+        m.restart_count = 0; // 手动启动重置计数
+      }
+      startup_queue_.push(req->module_name);
+      res->success = true; 
+      res->message="已加入启动队列";
+      break;
+      
+    case 2: 
+      res->success = stopModule(req->module_name); 
+      res->message="停止完成";
+      break;
+      
+    case 3: 
+      res->success = restartModule(req->module_name); 
+      res->message="重启完成";
+      break;
+      
+    case 4:
+      m.enabled = false;
+      stopModule(req->module_name);
+      res->success = true;
+      res->message = "模块已禁用";
+      break;
+      
+    case 5:
+      m.enabled = true;
+      res->success = true;
+      res->message = "模块已启用";
+      break;
+      
+    default: 
+      res->message="未知指令";
+      break;
   }
 }=== ./config/modules.yaml ===
 modules:
+  power_manager:
+    package_name: "power_manager"
+    node_name: "power_manager_node"
+    monitor_topic: "/power/heartbeat"
+    enabled: true
+    auto_start: true
+    heartbeat_timeout: 1.0
+    startup_timeout: 3.0
+    max_restart_count: 3
+    depends: []
+
+  communication:
+    package_name: "communication"
+    node_name: "communication_node"
+    monitor_topic: "/comm/heartbeat"
+    enabled: true
+    auto_start: true
+    heartbeat_timeout: 0.5
+    startup_timeout: 2.0
+    max_restart_count: 3
+    depends: ["power_manager"]
+
   leg_controller:
     package_name: "leg_controller"
     node_name: "leg_controller_node"
     monitor_topic: "/leg/heartbeat"
     enabled: true
     auto_start: true
-    heartbeat_timeout: 1.0
+    heartbeat_timeout: 0.2
+    startup_timeout: 5.0
+    max_restart_count: 2
+    depends: ["communication"]
+
+  balance_controller:
+    package_name: "balance_controller"
+    node_name: "balance_controller_node"
+    monitor_topic: "/balance/heartbeat"
+    enabled: true
+    auto_start: true
+    heartbeat_timeout: 0.1
+    startup_timeout: 3.0
+    max_restart_count: 2
+    depends: ["leg_controller"]
 
   arm_controller:
-    package_name: "arm_controlle"
+    package_name: "arm_controller"
     node_name: "arm_controller_node"
     monitor_topic: "/arm/heartbeat"
     enabled: true
     auto_start: false
-    heartbeat_timeout: 1.0=== ./test/test_module_manager.cpp ===
+    heartbeat_timeout: 0.5
+    startup_timeout: 2.0
+    max_restart_count: 3
+    depends: ["communication"]=== ./test/test_module_manager.cpp ===
 #include <gtest/gtest.h>
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp/executors/single_threaded_executor.hpp>
@@ -533,6 +890,17 @@ float64 last_heartbeat
 string state_msg=== ./include/module_manager_hub/module.h ===
 #pragma once
 #include <string>
+#include <vector>
+
+// 模块完整状态机
+enum class ModuleState {
+  UNLOADED,    // 未加载
+  LOADING,     // 正在启动
+  READY,       // 初始化完成，就绪
+  RUNNING,     // 正常运行
+  ERROR,       // 运行出错
+  STOPPED      // 已停止
+};
 
 struct Module {
   std::string name;
@@ -542,16 +910,30 @@ struct Module {
   bool enabled;
   bool auto_start;
   double heartbeat_timeout;
-
-  bool online = false;
-  bool running = false;
+  
+  // 依赖列表
+  std::vector<std::string> depends;
+  
+  // 启动超时（秒）
+  double startup_timeout = 5.0;
+  
+  // 重启配置
+  int max_restart_count = 3;
+  std::vector<double> restart_intervals = {0.0, 1.0, 3.0};
+  
+  // 运行时状态
+  ModuleState state = ModuleState::UNLOADED;
   double last_heartbeat = 0.0;
+  double startup_time = 0.0;
   int pid = -1;
+  int restart_count = 0;
+  std::string error_message;
 };=== ./include/module_manager_hub/module_manager.h ===
 #pragma once
 #include <rclcpp/rclcpp.hpp>
 #include <map>
 #include <unordered_map>
+#include <queue>
 #include "module.h"
 #include "module_manager_hub/msg/module_status.hpp"
 #include "module_manager_hub/srv/module_control.hpp"
@@ -560,7 +942,7 @@ struct Module {
 class ModuleManager : public rclcpp::Node {
 public:
   explicit ModuleManager(const std::string &name);
-
+  ~ModuleManager() override;
 private:
   // 配置加载
   void loadConfig(const std::string &path);
@@ -569,26 +951,47 @@ private:
   bool startModule(const std::string &name);
   bool stopModule(const std::string &name);
   bool restartModule(const std::string &name);
+  
+  // 依赖启动队列处理
+  void processStartupQueue();
+  bool checkDependenciesReady(const std::string &name);
+  
+  // 就绪检查回调
+  void readyCallback(const std_msgs::msg::Empty::SharedPtr msg, const std::string &mod_name);
 
   // 心跳回调
   void heartbeatCallback(const std_msgs::msg::Empty::SharedPtr msg, const std::string &mod_name);
 
-  // 巡检定时器
+  // 巡检定时器（处理超时、重启、状态机）
   void monitorTimerCallback();
 
-  // 状态发布
+  // 状态发布（包含完整状态）
   void publishModuleStatus();
 
-  // 控制服务
+  // 控制服务（支持更多指令）
   void moduleControlCallback(
     const std::shared_ptr<module_manager_hub::srv::ModuleControl::Request> req,
     std::shared_ptr<module_manager_hub::srv::ModuleControl::Response> res
   );
 
+  // 优雅关闭处理
+  void handleShutdownSignal(int sig);
+  void gracefulShutdown();
+
+  // 自动重启处理
+  void handleModuleFailure(const std::string &name, const std::string &reason);
+
+  // 数据结构
   std::map<std::string, Module> modules_;
     // 心跳订阅池
   std::unordered_map<std::string, rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr> heart_subs_;
+  std::unordered_map<std::string, rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr> ready_subs_;
+  
+  // 启动队列
+  std::queue<std::string> startup_queue_;
+  bool processing_startup_ = false;
 
+  // ROS接口
   rclcpp::Publisher<module_manager_hub::msg::ModuleStatus>::SharedPtr status_pub_;
   rclcpp::Service<module_manager_hub::srv::ModuleControl>::SharedPtr ctrl_srv_;
   rclcpp::TimerBase::SharedPtr monitor_timer_;

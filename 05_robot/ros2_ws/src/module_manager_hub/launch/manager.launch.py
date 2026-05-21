@@ -12,7 +12,7 @@ def generate_launch_description():
             package='module_manager_hub',
             executable='module_manager_node',
             name='module_manager_hub',
-            parameters=[config],
+            parameters=[{'config_path': config}],
             output='screen'
         )
     ])

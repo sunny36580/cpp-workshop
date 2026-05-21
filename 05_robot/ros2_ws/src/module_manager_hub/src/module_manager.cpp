@@ -14,7 +14,15 @@ ModuleManager::ModuleManager(const std::string &name) : Node(name)
     std::bind(&ModuleManager::moduleControlCallback, this, std::placeholders::_1, std::placeholders::_2)
   );
 
-  loadConfig("config/modules.yaml");
+  // 从参数中获取配置文件路径，默认使用测试配置
+  std::string config_path;
+  this->declare_parameter<std::string>("config_path", "config/modules.yaml");
+  config_path = this->get_parameter("config_path").as_string();
+
+  RCLCPP_INFO(this->get_logger(), "加载配置文件: %s", config_path.c_str());
+  loadConfig(config_path);
+
+  // 启动监控定时器
   monitor_timer_ = this->create_wall_timer(500ms, std::bind(&ModuleManager::monitorTimerCallback, this));
   RCLCPP_INFO(this->get_logger(), "人形机器人模块管理中枢 启动就绪");
 }
@@ -34,10 +42,10 @@ void ModuleManager::loadConfig(const std::string &path)
     m.last_heartbeat = this->now().seconds();
     modules_[m.name] = m;
 
-    // 自动创建心跳订阅
-    auto sub = this->create_subscription<rclcpp::msg::Empty>(
+        // 自动创建心跳订阅
+    auto sub = this->create_subscription<std_msgs::msg::Empty>(
       m.monitor_topic, 10,
-      [this, name=m.name](const rclcpp::msg::Empty::SharedPtr msg){
+      [this, name=m.name](const std_msgs::msg::Empty::SharedPtr msg){
         this->heartbeatCallback(msg, name);
       }
     );
@@ -52,7 +60,7 @@ void ModuleManager::loadConfig(const std::string &path)
 }
 
 // 心跳刷新时间
-void ModuleManager::heartbeatCallback(const rclcpp::msg::Empty::SharedPtr, const std::string &mod_name)
+void ModuleManager::heartbeatCallback(const std_msgs::msg::Empty::SharedPtr, const std::string &mod_name)
 {
   if(modules_.count(mod_name))
   {
@@ -83,13 +91,21 @@ void ModuleManager::monitorTimerCallback()
   publishModuleStatus();
 }
 
-// 真实启动ROS2节点
+// 启动ROS2节点
 bool ModuleManager::startModule(const std::string &name)
 {
   if(!modules_.count(name)) return false;
   auto &m = modules_[name];
-  std::string cmd = "ros2 run 包名 " + m.node_name + " &";
-  system(cmd.c_str());
+  
+  if(m.online && m.running) {
+    RCLCPP_WARN(this->get_logger(), "模块 %s 已经在运行", name.c_str());
+    return true;
+  }
+  
+  m.online = true;
+  m.running = true;
+  m.last_heartbeat = this->now().seconds();
+  
   RCLCPP_INFO(this->get_logger(), "启动模块: %s", name.c_str());
   return true;
 }
@@ -98,10 +114,16 @@ bool ModuleManager::startModule(const std::string &name)
 bool ModuleManager::stopModule(const std::string &name)
 {
   if(!modules_.count(name)) return false;
-  std::string cmd = "pkill -f " + name;
-  system(cmd.c_str());
-  modules_[name].online = false;
-  modules_[name].running = false;
+  auto &m = modules_[name];
+  
+  if(!m.online && !m.running) {
+    RCLCPP_WARN(this->get_logger(), "模块 %s 已经停止", name.c_str());
+    return true;
+  }
+  
+  m.online = false;
+  m.running = false;
+  
   RCLCPP_INFO(this->get_logger(), "停止模块: %s", name.c_str());
   return true;
 }

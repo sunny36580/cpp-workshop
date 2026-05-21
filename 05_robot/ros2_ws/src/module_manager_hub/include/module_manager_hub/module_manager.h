@@ -5,6 +5,7 @@
 #include "module.h"
 #include "module_manager_hub/msg/module_status.hpp"
 #include "module_manager_hub/srv/module_control.hpp"
+#include "std_msgs/msg/empty.hpp"
 
 class ModuleManager : public rclcpp::Node {
 public:
@@ -20,7 +21,7 @@ private:
   bool restartModule(const std::string &name);
 
   // 心跳回调
-  void heartbeatCallback(const rclcpp::msg::Empty::SharedPtr msg, const std::string &mod_name);
+  void heartbeatCallback(const std_msgs::msg::Empty::SharedPtr msg, const std::string &mod_name);
 
   // 巡检定时器
   void monitorTimerCallback();
@@ -35,8 +36,8 @@ private:
   );
 
   std::map<std::string, Module> modules_;
-  // 心跳订阅池
-  std::unordered_map<std::string, rclcpp::Subscription<rclcpp::msg::Empty>::SharedPtr> heart_subs_;
+    // 心跳订阅池
+  std::unordered_map<std::string, rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr> heart_subs_;
 
   rclcpp::Publisher<module_manager_hub::msg::ModuleStatus>::SharedPtr status_pub_;
   rclcpp::Service<module_manager_hub::srv::ModuleControl>::SharedPtr ctrl_srv_;

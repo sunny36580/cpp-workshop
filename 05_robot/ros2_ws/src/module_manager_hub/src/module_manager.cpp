@@ -3,6 +3,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <ctime>
+#include <sys/wait.h>
 
 using namespace std::chrono_literals;
 
@@ -36,13 +37,16 @@ void ModuleManager::loadConfig(const std::string &path)
     m.name = entry.first.as<std::string>();
     m.node_name = entry.second["node_name"].as<std::string>();
     m.monitor_topic = entry.second["monitor_topic"].as<std::string>();
+    m.package_name = entry.second["package_name"].as<std::string>();
     m.enabled = entry.second["enabled"].as<bool>();
     m.auto_start = entry.second["auto_start"].as<bool>();
     m.heartbeat_timeout = entry.second["heartbeat_timeout"].as<double>();
     m.last_heartbeat = this->now().seconds();
     modules_[m.name] = m;
 
-        // 自动创建心跳订阅
+    RCLCPP_INFO(this->get_logger(), "加载模块配置: %s (%s)", m.name.c_str(), m.node_name.c_str());
+
+    // 自动创建心跳订阅
     auto sub = this->create_subscription<std_msgs::msg::Empty>(
       m.monitor_topic, 10,
       [this, name=m.name](const std_msgs::msg::Empty::SharedPtr msg){
@@ -94,38 +98,64 @@ void ModuleManager::monitorTimerCallback()
 // 启动ROS2节点
 bool ModuleManager::startModule(const std::string &name)
 {
-  if(!modules_.count(name)) return false;
+  if (!modules_.count(name)) {
+    RCLCPP_ERROR(this->get_logger(), "模块 %s 不存在", name.c_str());
+    return false;
+  }
+
   auto &m = modules_[name];
-  
-  if(m.online && m.running) {
-    RCLCPP_WARN(this->get_logger(), "模块 %s 已经在运行", name.c_str());
+  if (m.pid > 0) {
+    RCLCPP_WARN(this->get_logger(), "模块 %s 已在运行", name.c_str());
     return true;
   }
-  
-  m.online = true;
-  m.running = true;
-  m.last_heartbeat = this->now().seconds();
-  
-  RCLCPP_INFO(this->get_logger(), "启动模块: %s", name.c_str());
-  return true;
+
+  RCLCPP_INFO(this->get_logger(), "启动子节点: ros2 run %s %s",
+              m.package_name.c_str(), m.node_name.c_str());
+
+  pid_t pid = fork();
+  if (pid == 0) {
+    // 子进程执行 ros2 run
+    execlp("ros2", "ros2", "run",
+           m.package_name.c_str(),
+           m.node_name.c_str(),
+           (char*)NULL);
+    exit(1);
+  }
+  else if (pid > 0) {
+    // 只记录PID，不判断是否启动成功
+    m.pid = pid;
+    return true;
+  }
+  else {
+    RCLCPP_ERROR(this->get_logger(), "fork 进程失败");
+    return false;
+  }
 }
+
 
 // 停止节点
 bool ModuleManager::stopModule(const std::string &name)
 {
-  if(!modules_.count(name)) return false;
+  if (!modules_.count(name)) return false;
   auto &m = modules_[name];
-  
-  if(!m.online && !m.running) {
-    RCLCPP_WARN(this->get_logger(), "模块 %s 已经停止", name.c_str());
+
+  if (m.pid <= 0) {
+    RCLCPP_WARN(this->get_logger(), "模块 %s 未运行", name.c_str());
     return true;
   }
-  
-  m.online = false;
-  m.running = false;
-  
-  RCLCPP_INFO(this->get_logger(), "停止模块: %s", name.c_str());
-  return true;
+
+  RCLCPP_INFO(this->get_logger(), "停止模块 %s，PID=%d", name.c_str(), m.pid);
+
+  // 真正杀死进程
+  if (kill(m.pid, SIGTERM) == 0) {
+    m.pid = -1;
+    m.running = false;
+    m.online = false;
+    return true;
+  } else {
+    RCLCPP_ERROR(this->get_logger(), "杀死进程失败");
+    return false;
+  }
 }
 
 bool ModuleManager::restartModule(const std::string &name)

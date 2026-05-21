@@ -1,0 +1,5 @@
+string module_name
+uint8 cmd  # 1启动 2停止 3重启 4禁用
+---
+bool success
+string message

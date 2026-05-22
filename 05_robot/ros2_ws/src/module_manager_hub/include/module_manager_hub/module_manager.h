@@ -15,7 +15,7 @@ public:
 
   void handleShutdownSignal(int sig);
 
-private:
+ private:
   // 配置加载
   void loadConfig(const std::string &path);
 
@@ -26,7 +26,6 @@ private:
   
   // 依赖启动队列处理
   void processStartupQueue();
-  bool checkDependenciesReady(const std::string &name);
   
   // 就绪检查回调
   void readyCallback(const std_msgs::msg::Empty::SharedPtr msg, const std::string &mod_name);
@@ -34,19 +33,19 @@ private:
   // 心跳回调
   void heartbeatCallback(const std_msgs::msg::Empty::SharedPtr msg, const std::string &mod_name);
 
-  // 巡检定时器（处理超时、重启、状态机）
+  // 巡检定时器
   void monitorTimerCallback();
 
-  // 状态发布（包含完整状态）
+  // 状态发布
   void publishModuleStatus();
 
-  // 控制服务（支持更多指令）
+  // 控制服务
   void moduleControlCallback(
     const std::shared_ptr<module_manager_hub::srv::ModuleControl::Request> req,
     std::shared_ptr<module_manager_hub::srv::ModuleControl::Response> res
   );
 
-  // 优雅关闭处理
+  // 优雅关闭
   void gracefulShutdown();
 
   // 自动重启处理

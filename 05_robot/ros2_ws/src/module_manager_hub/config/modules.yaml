@@ -8,7 +8,6 @@ modules:
     heartbeat_timeout: 1.0
     startup_timeout: 3.0
     max_restart_count: 3
-    depends: []
 
   communication:
     package_name: "communication"
@@ -19,7 +18,6 @@ modules:
     heartbeat_timeout: 0.5
     startup_timeout: 2.0
     max_restart_count: 3
-    depends: ["power_manager"]
 
   leg_controller:
     package_name: "leg_controller"
@@ -30,7 +28,6 @@ modules:
     heartbeat_timeout: 0.2
     startup_timeout: 5.0
     max_restart_count: 2
-    depends: ["communication"]
 
   balance_controller:
     package_name: "balance_controller"
@@ -41,7 +38,6 @@ modules:
     heartbeat_timeout: 0.1
     startup_timeout: 3.0
     max_restart_count: 2
-    depends: ["leg_controller"]
 
   arm_controller:
     package_name: "arm_controller"
@@ -52,4 +48,3 @@ modules:
     heartbeat_timeout: 0.5
     startup_timeout: 2.0
     max_restart_count: 3
-    depends: ["communication"]

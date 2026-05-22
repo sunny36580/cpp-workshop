@@ -21,10 +21,7 @@ struct Module {
   bool auto_start;
   double heartbeat_timeout;
   
-  // 依赖列表
-  std::vector<std::string> depends;
-  
-  // 启动超时（秒）
+  // 超时配置
   double startup_timeout = 5.0;
   
   // 重启配置

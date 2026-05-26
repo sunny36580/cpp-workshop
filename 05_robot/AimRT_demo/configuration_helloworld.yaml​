@@ -1,0 +1,35 @@
+# 基础信息
+base_info:
+  project_name: helloworld  # 项目名称
+  build_mode_tags: ["EXAMPLE", "SIMULATION", "TEST_CAMERA"]  # 构建模式标签
+  aimrt_import_options:  # AimRT框架的构建选项
+    AIMRT_BUILD_TESTS: "OFF"  # 是否构建测试代码
+    AIMRT_BUILD_EXAMPLES: "ON"  # 是否构建示例代码
+    AIMRT_BUILD_DOCUMENT: "OFF"  # 是否构建文档
+    AIMRT_BUILD_RUNTIME: "ON"  # 是否构建运行时核心
+    AIMRT_BUILD_CLI_TOOLS: "OFF"  # 是否构建命令行工具
+    AIMRT_BUILD_WITH_PROTOBUF: "ON"  # 是否启用Protobuf支持
+    AIMRT_USE_LOCAL_PROTOC_COMPILER: "OFF"  # 是否使用本地protoc编译器
+    AIMRT_BUILD_WITH_ROS2: "OFF"  # 是否集成ROS2支持
+    AIMRT_BUILD_NET_PLUGIN: "OFF"  # 是否构建网络插件
+    AIMRT_BUILD_ROS2_PLUGIN: "OFF"  # 是否构建ROS2插件
+    # ...  # 其他插件选项（MQTT、Zenoh等）
+
+# 模块  会生成 ./helloworld/src/module/helloworld_module/helloworld_module.h
+modules:
+  - name: HelloWorld_module  # 自定义模块名称，同时会据此生成module的类名
+  #   build_mode_tag: ["EXAMPLE"]  # 可选：指定模块的构建标签
+
+# pkg   会生成 ./helloworld/src/pkg/helloworld_pkg/pkg_main.cc
+pkgs:
+  - name: HelloWorld_pkg  # 包名
+    modules:
+      - name: HelloWorld_module  # 包含的模块
+
+# 部署  会生成 ./helloworld/src/install 目录及相应的启动脚本、配置文件
+deploy_modes:
+  - name: local_deploy  # 部署模式名称
+    deploy_ins: # 部署实例
+      - name: local_ins_helloworld  # 实例名称
+        pkgs:
+          - name: HelloWorld_pkg  # 实例加载的包

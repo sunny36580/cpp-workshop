@@ -1,0 +1,40 @@
+# 基础信息
+base_info:
+  project_name: Logger # 项目名称
+  build_mode_tags: ["EXAMPLE", "SIMULATION", "TEST_CAMERA"] # 构建模式标签
+  aimrt_import_options: # AimRT框架的构建选项
+    AIMRT_BUILD_TESTS: "OFF" # 是否构建测试代码
+    AIMRT_BUILD_EXAMPLES: "ON" # 是否构建示例代码
+    AIMRT_BUILD_DOCUMENT: "OFF" # 是否构建文档
+    AIMRT_BUILD_RUNTIME: "ON" # 是否构建运行时核心
+    AIMRT_BUILD_CLI_TOOLS: "OFF" # 是否构建命令行工具
+    AIMRT_BUILD_WITH_PROTOBUF: "ON" # 是否启用Protobuf支持
+    AIMRT_USE_LOCAL_PROTOC_COMPILER: "OFF" # 是否使用本地protoc编译器
+    AIMRT_BUILD_WITH_ROS2: "OFF" # 是否集成ROS2支持
+    AIMRT_BUILD_NET_PLUGIN: "OFF" # 是否构建网络插件
+    AIMRT_BUILD_ROS2_PLUGIN: "ON" # 是否构建ROS2插件
+
+# 模块
+modules:
+  - name: executor_module # 最基本的 cpp executor 示例
+  - name: executor_co_module # 基于协程接口使用 executor 功能的示例
+  - name: executor_co_loop_module # 基于协程接口使用 executor 功能实现定时循环的示例
+  - name: real_time_module #  executor 实时性相关功能的示例
+
+# pkg
+pkgs:
+  - name: executor_pkg # 包名
+    modules:
+      - name: executor_module
+      - name: executor_co_module
+      - name: executor_co_loop_module
+      - name: real_time_module
+
+# 部署
+deploy_modes:
+  - name: local_deploy # 部署模式名称
+    deploy_ins: # 部署实例
+      - name: local_ins_executor # 实例名称
+        pkgs:
+          - name: executor_pkg # 实例加载的包
+

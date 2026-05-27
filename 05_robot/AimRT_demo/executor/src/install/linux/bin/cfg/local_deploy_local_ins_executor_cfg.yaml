@@ -1,4 +1,20 @@
 aimrt:
+  executor:
+    executors:
+      - name: work_executor # 执行器名称
+        type: asio_thread # 执行器类型：基于 ASIO 的线程池，
+        options:
+          thread_num: 2 # 分配的线程数量，用于并发处理任务
+
+      - name: thread_safe_executor # 线程安全执行器：通过 ASIO Strand 实现串行执行，避免竞态条件
+        type: asio_strand # 执行器类型：基于 ASIO 的 strand 包装，确保线程安全
+        options:
+          bind_asio_thread_executor_name: work_executor # 绑定的基础执行器，实际任务由其线程池调度执行
+
+      - name: time_schedule_executor # 定时任务执行器：用于周期性/定时调度任务
+        type: asio_thread # 执行器类型：使用独立的 ASIO 线程池执行定时任务
+        options:
+          thread_num: 2 # 分配的线程数量，可根据定时任务复杂度调整
   log:
     core_lvl: INFO # Trace/Debug/Info/Warn/Error/Fatal/Off
     backends:

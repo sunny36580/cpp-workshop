@@ -35,4 +35,9 @@ struct Module {
   int pid = -1;
   int restart_count = 0;
   std::string error_message;
+
+  // 启动方式标记
+  bool is_launch_file = false;
+  bool is_python_script = false;
+  std::string script_path;
 };

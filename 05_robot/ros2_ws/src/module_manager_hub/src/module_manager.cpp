@@ -64,6 +64,17 @@ void ModuleManager::loadConfig(const std::string &path)
     m.enabled = entry.second["enabled"].as<bool>();
     m.auto_start = entry.second["auto_start"].as<bool>();
     m.heartbeat_timeout = entry.second["heartbeat_timeout"].as<double>();
+
+    // 加载启动方式标记
+    if (entry.second["is_launch_file"]) {
+      m.is_launch_file = entry.second["is_launch_file"].as<bool>();
+    }
+    if (entry.second["is_python_script"]) {
+      m.is_python_script = entry.second["is_python_script"].as<bool>();
+    }
+    if (entry.second["script_path"]) {
+      m.script_path = entry.second["script_path"].as<std::string>();
+    }
     
     // 加载启动超时
     if (entry.second["startup_timeout"]) {
@@ -191,15 +202,25 @@ bool ModuleManager::startModule(const std::string &name)
 
   pid_t pid = fork();
   if (pid == 0) {
-    // 子进程执行命令（支持ros2 run、bash脚本、任何可执行文件）
-    execlp("ros2", "ros2", "run",
-           m.package_name.c_str(),
-           m.node_name.c_str(),
-           (char*)NULL);
-    
-    // 如果执行失败，尝试直接执行二进制/脚本
-    std::string cmd = m.package_name + "/" + m.node_name;
-    execlp(cmd.c_str(), cmd.c_str(), (char*)NULL);
+    // 子进程执行命令
+    if (m.is_launch_file) {
+      // 启动launch文件
+      execlp("ros2", "ros2", "launch",
+             m.package_name.c_str(),
+             m.node_name.c_str(),
+             (char*)NULL);
+    } else if (m.is_python_script) {
+      // 直接运行Python脚本
+      execlp("python3", "python3",
+             m.script_path.c_str(),
+             (char*)NULL);
+    } else {
+      // 普通ros2 run节点
+      execlp("ros2", "ros2", "run",
+             m.package_name.c_str(),
+             m.node_name.c_str(),
+             (char*)NULL);
+    }
     
     RCLCPP_FATAL(this->get_logger(), "❌ 执行命令失败: %s", strerror(errno));
     exit(1);

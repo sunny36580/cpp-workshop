@@ -1,110 +1,241 @@
 #include "module_manager_hub/module_manager.h"
-#include <yaml-cpp/yaml.h>
 #include <chrono>
 #include <cstdlib>
-#include <ctime>
+#include <thread>
+#include <sstream>
+#include <vector>
 
 using namespace std::chrono_literals;
+using boost::asio::ip::udp;
 
-ModuleManager::ModuleManager(const std::string &name) : Node(name)
+ModuleManager::ModuleManager(const std::string &name)
+  : Node(name), udp_socket_(io_context_)
 {
+  // 模块状态发布
   status_pub_ = this->create_publisher<module_manager_hub::msg::ModuleStatus>("/robot/modules_status", 10);
+
+  // 模块控制服务
   ctrl_srv_ = this->create_service<module_manager_hub::srv::ModuleControl>(
     "/robot/module_control",
     std::bind(&ModuleManager::moduleControlCallback, this, std::placeholders::_1, std::placeholders::_2)
   );
 
-  // 从参数获取配置路径
+  // 加载主配置
   std::string config_path = "config/modules.yaml";
   this->declare_parameter<std::string>("config_path", config_path);
   this->get_parameter("config_path", config_path);
+  YAML::Node root_cfg = YAML::LoadFile(config_path);
 
+  // 1. 加载模块配置
   loadConfig(config_path);
+  // 2. 加载指令路由配置
+  if (root_cfg["cmd_route"])
+  {
+    loadCmdRoute(root_cfg["cmd_route"]);
+  }
 
+  // 模块监控定时器
   monitor_timer_ = this->create_wall_timer(500ms, std::bind(&ModuleManager::monitorTimerCallback, this));
-  RCLCPP_INFO(this->get_logger(), "人形机器人模块管理中枢 启动完成");
+
+  // 启动UDP服务
+  initUdpServer();
+  std::thread([this]() { io_context_.run(); }).detach();
+
+  RCLCPP_INFO(this->get_logger(), "人形机器人中枢启动完成 ✅");
 }
 
-// 加载配置 + 订阅业务话题
+ModuleManager::~ModuleManager()
+{
+  io_context_.stop();
+}
+
+// 加载指令路由表 & 预创建【仅自定义消息】发布器
+void ModuleManager::loadCmdRoute(const YAML::Node &route_node)
+{
+  for (const auto &entry : route_node)
+  {
+    std::string cmd_name = entry.first.as<std::string>();
+    CmdRoute route;
+    route.topic = entry.second["topic"].as<std::string>();
+    route.msg_type = entry.second["msg_type"].as<std::string>();
+    cmd_routes_[cmd_name] = route;
+
+    // 仅创建自定义 Robotarmcontrol 发布器
+    if (route.msg_type == "Robotarmcontrol")
+    {
+      arm_control_pubs_[route.topic] =
+        this->create_publisher<module_manager_hub::msg::Robotarmcontrol>(route.topic, 10);
+    }
+
+    RCLCPP_INFO(this->get_logger(), "指令路由: %s → %s [%s]",
+                cmd_name.c_str(), route.topic.c_str(), route.msg_type.c_str());
+  }
+}
+
+// UDP 初始化
+void ModuleManager::initUdpServer()
+{
+  try
+  {
+    udp_socket_.open(udp::v4());
+    udp_socket_.bind(udp::endpoint(udp::v4(), 8888));
+    doReceive();
+    RCLCPP_INFO(this->get_logger(), "UDP 监听端口: 8888");
+  }
+  catch (std::exception &e)
+  {
+    RCLCPP_ERROR(this->get_logger(), "UDP 启动失败: %s", e.what());
+  }
+}
+
+// UDP 异步接收
+void ModuleManager::doReceive()
+{
+  udp_socket_.async_receive_from(
+    buffer(recv_buffer_),
+    remote_endpoint_,
+    [this](std::error_code ec, std::size_t bytes)
+    {
+      if (!ec && bytes > 0)
+      {
+        std::string data(recv_buffer_.data(), bytes);
+        parseUdpCommand(data);
+      }
+      doReceive();
+    });
+}
+
+// 解析UDP字符串指令 格式: 指令名 参数1 参数2 参数3 ...
+void ModuleManager::parseUdpCommand(const std::string &data)
+{
+  RCLCPP_INFO(this->get_logger(), "收到UDP指令: %s", data.c_str());
+  std::istringstream iss(data);
+  std::string cmd;
+  iss >> cmd;
+
+  std::vector<double> params;
+  double p;
+  while (iss >> p) params.push_back(p);
+
+  dispatchCommand(cmd, params);
+}
+
+// 【核心】仅转发你的自定义消息
+void ModuleManager::dispatchCommand(const std::string &cmd, const std::vector<double> &params)
+{
+  auto route_it = cmd_routes_.find(cmd);
+  if (route_it == cmd_routes_.end())
+  {
+    RCLCPP_WARN(this->get_logger(), "未知指令: %s", cmd.c_str());
+    return;
+  }
+
+  const CmdRoute &route = route_it->second;
+  const std::string &topic = route.topic;
+
+  // 仅处理自定义 Robotarmcontrol 消息
+  if (route.msg_type == "Robotarmcontrol")
+  {
+    auto pub_it = arm_control_pubs_.find(topic);
+    if (pub_it == arm_control_pubs_.end())
+    {
+      RCLCPP_WARN(this->get_logger(), "发布器未找到: %s", topic.c_str());
+      return;
+    }
+
+    module_manager_hub::msg::Robotarmcontrol msg;
+
+    // UDP 格式: arm_control id1 pos1 vel1 id2 pos2 vel2 ...
+    for (size_t i = 0; i + 2 < params.size(); i += 3)
+    {
+      msg.motor_ids.push_back(static_cast<uint32_t>(params[i]));
+      msg.target_positions.push_back(static_cast<float>(params[i + 1]));
+      msg.target_velocitie.push_back(static_cast<float>(params[i + 2]));
+    }
+
+    pub_it->second->publish(msg);
+    RCLCPP_INFO(this->get_logger(), "转发机械臂指令 ✅ 电机数=%zu",
+                msg.motor_ids.size());
+  }
+  else
+  {
+    RCLCPP_WARN(this->get_logger(), "不支持的消息类型: %s", route.msg_type.c_str());
+  }
+}
+
+// ===================== 以下原有模块管理代码 完全不变 =====================
 void ModuleManager::loadConfig(const std::string &path)
 {
-  try {
+  try
+  {
     YAML::Node config = YAML::LoadFile(path);
-    for (const auto &entry : config["modules"]) {
+    for (const auto &entry : config["modules"])
+    {
       Module m;
       m.name = entry.first.as<std::string>();
       m.node_name = entry.second["node_name"].as<std::string>();
       m.watch_topic = entry.second["watch_topic"].as<std::string>();
       m.enabled = entry.second["enabled"].as<bool>();
       m.auto_start = entry.second["auto_start"].as<bool>();
-      m.auto_restart = entry.second["auto_restart"].as<bool>(); // 读取自动重启配置
+      m.auto_restart = entry.second["auto_restart"].as<bool>();
       m.timeout_sec = entry.second["timeout_sec"].as<double>();
       m.last_msg_time = this->now().seconds();
 
       modules_[m.name] = m;
 
-      // 通用订阅，监听业务话题
-      auto cb = [this, name = m.name](const std::shared_ptr<rclcpp::SerializedMessage> msg) {
+      auto cb = [this, name = m.name](const std::shared_ptr<rclcpp::SerializedMessage> msg)
+      {
         this->topicCallback(msg, name);
       };
       auto sub = this->create_generic_subscription(
-        m.watch_topic,
-        "rosidl_typesupport_cpp",
-        10,
-        cb
-      );
+        m.watch_topic, "rosidl_typesupport_cpp", 10, cb);
       topic_subs_[m.name] = sub;
 
-      RCLCPP_INFO(this->get_logger(), "加载模块: %s | 监听话题: %s | 自动重启: %s",
-                  m.name.c_str(), m.watch_topic.c_str(), m.auto_restart ? "true" : "false");
-
-      // 自动启动
-      if (m.enabled && m.auto_start) {
+      if (m.enabled && m.auto_start)
         startModule(m.name);
-      }
     }
-  } catch (std::exception &e) {
-    RCLCPP_ERROR(this->get_logger(), "配置加载失败: %s", e.what());
+  }
+  catch (std::exception &e)
+  {
+    RCLCPP_ERROR(this->get_logger(), "模块配置加载失败: %s", e.what());
   }
 }
 
-// 通用话题回调：更新最后消息时间
 template <typename MsgT>
 void ModuleManager::topicCallback(const std::shared_ptr<MsgT>, const std::string &mod_name)
 {
-  if (modules_.count(mod_name)) {
+  if (modules_.count(mod_name))
+  {
     modules_[mod_name].last_msg_time = this->now().seconds();
     modules_[mod_name].online = true;
     modules_[mod_name].running = true;
   }
 }
 
-// 定时巡检 + 自动重启核心逻辑
 void ModuleManager::monitorTimerCallback()
 {
   double now = this->now().seconds();
-  // 重启防抖间隔：同一模块 3s 内不重复重启，防止死循环
   const double restart_interval = 3.0;
   static std::map<std::string, double> last_restart_time;
 
-  for (auto &pair : modules_) {
+  for (auto &pair : modules_)
+  {
     auto &m = pair.second;
-    const std::string& mod_name = pair.first;
     if (!m.enabled) continue;
 
-    double delta = now - m.last_msg_time;
-    // 判定超时离线
-    if (delta > m.timeout_sec) {
+    if (now - m.last_msg_time > m.timeout_sec)
+    {
       m.online = false;
       m.running = false;
 
-      // 开启自动重启 + 满足防抖间隔，执行重启
-      if (m.auto_restart) {
-        auto it = last_restart_time.find(mod_name);
-        if (it == last_restart_time.end() || (now - it->second) > restart_interval) {
-          RCLCPP_WARN(this->get_logger(), "模块[%s]超时离线，执行自动重启", mod_name.c_str());
-          restartModule(mod_name);
-          last_restart_time[mod_name] = now;
+      if (m.auto_restart)
+      {
+        auto it = last_restart_time.find(pair.first);
+        if (it == last_restart_time.end() || now - it->second > restart_interval)
+        {
+          RCLCPP_WARN(this->get_logger(), "模块 %s 超时，执行自动重启", pair.first.c_str());
+          restartModule(pair.first);
+          last_restart_time[pair.first] = now;
         }
       }
     }
@@ -112,21 +243,16 @@ void ModuleManager::monitorTimerCallback()
   publishModuleStatus();
 }
 
-// 启动模块
 bool ModuleManager::startModule(const std::string &name)
 {
   if (!modules_.count(name)) return false;
   auto &m = modules_[name];
-  // 替换为你实际的功能包名
   std::string cmd = "ros2 run module_manager_hub " + m.node_name + " &";
   system(cmd.c_str());
-
   m.running = true;
-  RCLCPP_INFO(this->get_logger(), "启动模块: %s", name.c_str());
   return true;
 }
 
-// 停止模块
 bool ModuleManager::stopModule(const std::string &name)
 {
   if (!modules_.count(name)) return false;
@@ -134,11 +260,9 @@ bool ModuleManager::stopModule(const std::string &name)
   system(cmd.c_str());
   modules_[name].online = false;
   modules_[name].running = false;
-  RCLCPP_INFO(this->get_logger(), "停止模块: %s", name.c_str());
   return true;
 }
 
-// 重启模块
 bool ModuleManager::restartModule(const std::string &name)
 {
   stopModule(name);
@@ -146,18 +270,19 @@ bool ModuleManager::restartModule(const std::string &name)
   return startModule(name);
 }
 
-// 外部服务控制
 void ModuleManager::moduleControlCallback(
   const std::shared_ptr<module_manager_hub::srv::ModuleControl::Request> req,
   std::shared_ptr<module_manager_hub::srv::ModuleControl::Response> res)
 {
   res->success = false;
-  if (!modules_.count(req->module_name)) {
+  if (!modules_.count(req->module_name))
+  {
     res->message = "模块不存在";
     return;
   }
 
-  switch (req->cmd) {
+  switch (req->cmd)
+  {
     case 1:
       res->success = startModule(req->module_name);
       res->message = "已启动";
@@ -181,10 +306,10 @@ void ModuleManager::moduleControlCallback(
   }
 }
 
-// 发布模块状态
 void ModuleManager::publishModuleStatus()
 {
-  for (auto &pair : modules_) {
+  for (auto &pair : modules_)
+  {
     auto &m = pair.second;
     module_manager_hub::msg::ModuleStatus msg;
     msg.name = m.name;

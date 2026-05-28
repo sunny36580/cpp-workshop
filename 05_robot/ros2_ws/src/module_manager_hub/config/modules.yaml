@@ -1,14 +1,22 @@
 modules:
   leg_controller:
     node_name: "leg_controller_node"
-    watch_topic: "/leg/state"          # 模块自身话题
+    watch_topic: "/leg/state"
     enabled: true
     auto_start: true
+    auto_restart: true
     timeout_sec: 1.0
 
   arm_controller:
     node_name: "arm_controller_node"
-    watch_topic: "/arm/joint_states"   # 模块自身话题
+    watch_topic: "/arm/joint_states"
     enabled: true
     auto_start: false
+    auto_restart: false
     timeout_sec: 1.0
+
+# UDP指令路由配置（仅自定义消息）
+cmd_route:
+  arm_control:
+    topic: "/arm/control"
+    msg_type: "Robotarmcontrol"

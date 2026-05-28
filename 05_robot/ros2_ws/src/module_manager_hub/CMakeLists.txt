@@ -14,10 +14,13 @@ find_package(rclcpp REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(yaml-cpp REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
+find_package(Boost REQUIRED COMPONENTS system)
 
 # 生成消息 + 服务
 rosidl_generate_interfaces(${PROJECT_NAME}
   msg/ModuleStatus.msg
+  msg/Robotarmcontrol.msg
+  msg/Robotarmstatus.msg
   srv/ModuleControl.srv
   DEPENDENCIES std_msgs
 )
@@ -35,7 +38,11 @@ ament_target_dependencies(module_manager_node
   rclcpp
   std_msgs
 )
-target_link_libraries(module_manager_node yaml-cpp)
+
+target_link_libraries(module_manager_node
+  yaml-cpp
+  ${Boost_LIBRARIES}
+)
 
 # 链接自定义消息
 rosidl_get_typesupport_target(cpp_typesupport_target ${PROJECT_NAME} "rosidl_typesupport_cpp")

@@ -1,13 +1,34 @@
 #pragma once
 #include <rclcpp/rclcpp.hpp>
 #include <map>
+#include <string>
+#include <array>
+#include <yaml-cpp/yaml.h>
+
+// 正确的 UDP 头文件（boost::asio）
+#include <boost/asio.hpp>
+#include <boost/array.hpp>
+
 #include "module.h"
 #include "module_manager_hub/msg/module_status.hpp"
 #include "module_manager_hub/srv/module_control.hpp"
+#include "module_manager_hub/msg/robotarmcontrol.hpp"
+
+using boost::asio::ip::udp;
+using boost::asio::buffer;
+using boost::array;
+
+// 指令路由结构体
+struct CmdRoute
+{
+  std::string topic;
+  std::string msg_type;
+};
 
 class ModuleManager : public rclcpp::Node {
 public:
   explicit ModuleManager(const std::string &name);
+  ~ModuleManager() override;
 
 private:
   void loadConfig(const std::string &path);
@@ -33,4 +54,23 @@ private:
   rclcpp::Publisher<module_manager_hub::msg::ModuleStatus>::SharedPtr status_pub_;
   rclcpp::Service<module_manager_hub::srv::ModuleControl>::SharedPtr ctrl_srv_;
   rclcpp::TimerBase::SharedPtr monitor_timer_;
+
+  // ========== UDP 服务 ==========
+  void initUdpServer();
+  void doReceive();
+  void parseUdpCommand(const std::string &data);
+
+  boost::asio::io_context io_context_;
+  udp::socket udp_socket_;
+  udp::endpoint remote_endpoint_;
+  std::array<char, 1024> recv_buffer_;
+
+  // ========== 指令路由 + 消息分发 ==========
+  void loadCmdRoute(const YAML::Node &route_node);
+  void dispatchCommand(const std::string &cmd, const std::vector<double> &params);
+
+  std::map<std::string, CmdRoute> cmd_routes_;
+
+  // ========== 【仅保留自定义消息发布器】 ==========
+  std::map<std::string, rclcpp::Publisher<module_manager_hub::msg::Robotarmcontrol>::SharedPtr> arm_control_pubs_;
 };

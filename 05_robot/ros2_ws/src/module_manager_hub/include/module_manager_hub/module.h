@@ -4,9 +4,10 @@
 struct Module {
   std::string name;
   std::string node_name;       // 启动的节点名
-  std::string watch_topic;     // 要监控的业务话题（无需心跳）
+  std::string watch_topic;     // 监控的业务话题
   bool enabled;
   bool auto_start;
+  bool auto_restart;           // 新增：离线后是否自动重启
   double timeout_sec;          // 超时判定秒
 
   bool online = false;

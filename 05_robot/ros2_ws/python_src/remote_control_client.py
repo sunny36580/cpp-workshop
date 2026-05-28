@@ -2,15 +2,15 @@ import pygame
 import sys
 import time
 import socket
-from enum import Enum  # 新增：工程化指令枚举
+from enum import Enum
 
 # ====================== 基础配置 ======================
 LINEAR_SPEED_MAX = 1.0
 ANGULAR_SPEED_MAX = 1.5
-SPEED_STEP = 0.1
+CMD_SEND_RATE = 20  # 运动指令发送频率(Hz)，建议10-20Hz
 
 # UDP 配置
-UDP_TARGET_IP = "192.168.1.100"
+UDP_TARGET_IP = "192.168.182.128"
 UDP_TARGET_PORT = 8888
 
 # ====================== 【工程化】指令类型枚举（协议核心） ======================
@@ -75,6 +75,10 @@ class RobotRemote:
         self.angular_cfg = ANGULAR_SPEED_MAX
         self.last_tip = "等待操作"
 
+        # 【核心】运动状态控制
+        self.is_moving = False  # 是否正在运动（有按键按下）
+        self.last_cmd_time = 0  # 上一次发送运动指令的时间
+
         # 虚拟按键位置尺寸
         self.k_size = 60
         self.k_gap = 10
@@ -84,13 +88,14 @@ class RobotRemote:
         # UDP 初始化
         self.udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         print(f"✅ UDP 已初始化，目标: {UDP_TARGET_IP}:{UDP_TARGET_PORT}")
+        print(f"✅ 运动指令发送频率: {CMD_SEND_RATE}Hz")
 
         # 防抖标记：防止单按键重复发包
         self.task_sent = False
         self.stop_sent = False
 
     def update_speed(self):
-        """根据按键状态更新速度并发送运动指令"""
+        """只更新速度，不发送指令"""
         self.linear_vel = 0.0
         self.angular_vel = 0.0
 
@@ -103,10 +108,10 @@ class RobotRemote:
         if self.key_d:
             self.angular_vel -= self.angular_cfg
 
-        # 持续发送运动指令（60帧/秒，正常控速）
-        self.send_move_cmd()
+        # 更新运动状态
+        self.is_moving = (self.linear_vel != 0 or self.angular_vel != 0)
 
-    # -------------------------- 指令封装（统一使用Enum） --------------------------
+    # -------------------------- 指令封装 --------------------------
     def send_udp_msg(self, msg):
         """通用UDP发送接口"""
         try:
@@ -131,8 +136,12 @@ class RobotRemote:
         """发送紧急停止指令：3"""
         msg = f"{CmdType.STOP.value}\n"
         self.send_udp_msg(msg)
+        # 急停后重置运动状态
+        self.is_moving = False
+        self.linear_vel = 0.0
+        self.angular_vel = 0.0
 
-    # -------------------------- UI 绘制（更新任务列表） --------------------------
+    # -------------------------- UI 绘制 --------------------------
     def draw_key(self, text, x, y, pressed):
         color = BLUE if pressed else DARK_GRAY
         border = WHITE if pressed else GRAY
@@ -178,7 +187,7 @@ class RobotRemote:
         self.draw_key("S", self.k_cx, self.k_cy, self.key_s)
         self.draw_key("D", self.k_cx + self.k_size + self.k_gap, self.k_cy, self.key_d)
         
-        # 右侧任务列表（自动从TASK_LIST读取，不用硬写）
+        # 右侧任务列表
         task_title = self.font_md.render("预设任务列表", True, WHITE)
         self.screen.blit(task_title, (500, 80))
         y = 120
@@ -210,13 +219,17 @@ class RobotRemote:
         clock = pygame.time.Clock()
         running = True
         print("========== 人形机器人遥控系统启动 ==========")
+        print("✅ 按住WASD持续发送运动指令，松开自动停止")
         print("W 前进  S 后退  A 左转  D 右转")
         print("数字键 1-0 执行预设任务 | 空格 急停 | ESC 退出")
         print("==========================================\n")
 
         old_w, old_a, old_s, old_d = False, False, False, False
+        was_moving = False  # 记录上一帧是否在运动
 
         while running:
+            current_time = time.time()
+
             # 轮询WASD按键
             keys = pygame.key.get_pressed()
             self.key_w = keys[pygame.K_w]
@@ -254,7 +267,7 @@ class RobotRemote:
                     running = False
 
                 if event.type == pygame.KEYDOWN:
-                    # 数字键：预设任务（按下一次发一次，防抖）
+                    # 数字键：预设任务
                     if pygame.K_1 <= event.key <= pygame.K_9:
                         if not self.task_sent:
                             num = event.key - pygame.K_0
@@ -264,7 +277,7 @@ class RobotRemote:
                             self.task_sent = True
                     elif event.key == pygame.K_0:
                         if not self.task_sent:
-                            print("按下 数字 0，执行任务: {TASK_LIST[10]}")
+                            print(f"按下 数字 0，执行任务: {TASK_LIST[10]}")
                             self.last_tip = f"执行任务: {TASK_LIST[10]}"
                             self.send_task_cmd(10)
                             self.task_sent = True
@@ -276,9 +289,6 @@ class RobotRemote:
                             self.last_tip = "紧急停止"
                             self.send_stop_cmd()
                             self.stop_sent = True
-                            # 清空速度
-                            self.linear_vel = 0.0
-                            self.angular_vel = 0.0
 
                     # ESC 退出
                     elif event.key == pygame.K_ESCAPE:
@@ -291,11 +301,29 @@ class RobotRemote:
                     if event.key == pygame.K_SPACE:
                         self.stop_sent = False
 
+            # 更新速度和运动状态
             self.update_speed()
+
+            # ===================== 【核心发送逻辑】 =====================
+            # 1. 正在运动：按固定频率持续发送
+            if self.is_moving:
+                if current_time - self.last_cmd_time >= 1/CMD_SEND_RATE:
+                    self.send_move_cmd()
+                    self.last_cmd_time = current_time
+                was_moving = True
+
+            # 2. 刚停止运动：只发送一次停止指令
+            elif was_moving:
+                self.send_move_cmd()  # 发送最后一次0速度指令
+                print("所有按键松开，发送停止指令")
+                was_moving = False
+            # ==========================================================
+
             self.draw_ui()
             clock.tick(60)
 
-        # 释放资源
+        # 退出前发送一次停止指令
+        self.send_move_cmd()
         self.udp_socket.close()
         pygame.quit()
         print("程序已安全退出")

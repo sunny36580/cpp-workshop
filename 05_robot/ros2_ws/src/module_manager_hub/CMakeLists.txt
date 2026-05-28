@@ -46,13 +46,21 @@ target_link_libraries(module_manager_node
   ${Boost_LIBRARIES}
 )
 
+# 测试机械臂节点
+add_executable(test_arm_controller_node src/test_arm_controller_node.cpp)
+ament_target_dependencies(test_arm_controller_node
+  rclcpp
+  std_msgs
+)
+
 # 链接自定义消息
 rosidl_get_typesupport_target(cpp_typesupport_target ${PROJECT_NAME} "rosidl_typesupport_cpp")
-target_link_libraries(module_manager_node ${cpp_typesupport_target})
+target_link_libraries(test_arm_controller_node ${cpp_typesupport_target})
 
-# 安装
+# 安装到bin目录
 install(TARGETS
   module_manager_node
+  test_arm_controller_node  # 加这行
   DESTINATION lib/${PROJECT_NAME}
 )
 

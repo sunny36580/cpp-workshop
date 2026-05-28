@@ -1,22 +1,13 @@
 modules:
-  leg_controller:
-    node_name: "leg_controller_node"
-    watch_topic: "/leg/state"
+  arm_controller:
+    node_name: "test_arm_controller_node"  # 这里必须和上面的可执行文件名一致
+    watch_topic: "/arm/status"             # 测试节点发布的状态话题
     enabled: true
     auto_start: true
     auto_restart: true
     timeout_sec: 1.0
 
-  arm_controller:
-    node_name: "arm_controller_node"
-    watch_topic: "/arm/joint_states"
-    enabled: true
-    auto_start: false
-    auto_restart: false
-    timeout_sec: 1.0
-
-# UDP指令路由配置（仅自定义消息）
 cmd_route:
   arm_control:
-    topic: "/arm/control"
+    topic: "/arm/control"                  # 测试节点订阅的控制话题
     msg_type: "Robotarmcontrol"

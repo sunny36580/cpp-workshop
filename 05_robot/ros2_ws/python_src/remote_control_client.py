@@ -2,6 +2,7 @@ import pygame
 import sys
 import time
 import socket
+from enum import Enum  # 新增：工程化指令枚举
 
 # ====================== 基础配置 ======================
 LINEAR_SPEED_MAX = 1.0
@@ -12,10 +13,25 @@ SPEED_STEP = 0.1
 UDP_TARGET_IP = "192.168.1.100"
 UDP_TARGET_PORT = 8888
 
-# 自定义指令类型（统一协议）
-CMD_MOVE = "MOVE"    # 运动控制: MOVE,线速度,角速度
-CMD_TASK = "TASK"    # 预设任务: TASK,任务编号
-CMD_STOP = "STOP"    # 紧急停止: STOP
+# ====================== 【工程化】指令类型枚举（协议核心） ======================
+class CmdType(Enum):
+    MOVE = 1    # 运动控制: 1,线速度,角速度
+    TASK = 2    # 预设任务: 2,任务编号(1-10)
+    STOP = 3    # 紧急停止: 3
+
+# ====================== 10个预设任务定义（完全按照你的需求） ======================
+TASK_LIST = {
+    1: "握手程序",
+    2: "语音交互模式",
+    3: "黄梅戏剧本",
+    4: "原地旋转180度",
+    5: "手指动作能力展示",
+    6: "挥手动作",
+    7: "表情头能力展示",
+    8: "回到待机模式",
+    9: "预留任务9",
+    10: "预留任务10"
+}
 
 # 颜色
 BLACK = (0, 0, 0)
@@ -34,7 +50,7 @@ class RobotRemote:
         self.win_w = 800
         self.win_h = 500
         self.screen = pygame.display.set_mode((self.win_w, self.win_h))
-        pygame.display.set_caption("遥控前端 - WASD 键盘直控")
+        pygame.display.set_caption("人形机器人遥控系统")
 
         # 字体
         try:
@@ -90,33 +106,33 @@ class RobotRemote:
         # 持续发送运动指令（60帧/秒，正常控速）
         self.send_move_cmd()
 
-    # -------------------------- 指令封装 --------------------------
+    # -------------------------- 指令封装（统一使用Enum） --------------------------
     def send_udp_msg(self, msg):
         """通用UDP发送接口"""
         try:
             self.udp_socket.sendto(msg.encode(), (UDP_TARGET_IP, UDP_TARGET_PORT))
-            # print(f"📤 发送: {msg.strip()}")
+            # print(f"📤 发送: {msg.strip()}")  # 需要调试时取消注释
         except Exception as e:
             print(f"❌ UDP 发送失败: {e}")
 
     def send_move_cmd(self):
-        """发送运动控制指令 MOVE,线性速度,角速度"""
+        """发送运动控制指令：1,线速度,角速度"""
         linear = round(self.linear_vel, 2)
         angular = round(self.angular_vel, 2)
-        msg = f"{CMD_MOVE},{linear},{angular}\n"
+        msg = f"{CmdType.MOVE.value},{linear},{angular}\n"
         self.send_udp_msg(msg)
 
     def send_task_cmd(self, task_num):
-        """发送预设任务指令 TASK,任务编号"""
-        msg = f"{CMD_TASK},{task_num}\n"
+        """发送预设任务指令：2,任务编号"""
+        msg = f"{CmdType.TASK.value},{task_num}\n"
         self.send_udp_msg(msg)
 
     def send_stop_cmd(self):
-        """发送急停指令 STOP"""
-        msg = f"{CMD_STOP}\n"
+        """发送紧急停止指令：3"""
+        msg = f"{CmdType.STOP.value}\n"
         self.send_udp_msg(msg)
 
-    # -------------------------- UI 绘制（完全保留原有逻辑） --------------------------
+    # -------------------------- UI 绘制（更新任务列表） --------------------------
     def draw_key(self, text, x, y, pressed):
         color = BLUE if pressed else DARK_GRAY
         border = WHITE if pressed else GRAY
@@ -144,7 +160,7 @@ class RobotRemote:
 
     def draw_ui(self):
         self.screen.fill(BLACK)
-        title = self.font_lg.render("机器人遥控前端", True, WHITE)
+        title = self.font_lg.render("人形机器人遥控系统", True, WHITE)
         self.screen.blit(title, (self.win_w//2 - title.get_width()//2, 20))
         state = self.font_md.render("UDP 遥控模式", True, YELLOW)
         self.screen.blit(state, (40, 80))
@@ -161,27 +177,42 @@ class RobotRemote:
         self.draw_key("A", self.k_cx - self.k_size - self.k_gap, self.k_cy, self.key_a)
         self.draw_key("S", self.k_cx, self.k_cy, self.key_s)
         self.draw_key("D", self.k_cx + self.k_size + self.k_gap, self.k_cy, self.key_d)
-        desc = [
+        
+        # 右侧任务列表（自动从TASK_LIST读取，不用硬写）
+        task_title = self.font_md.render("预设任务列表", True, WHITE)
+        self.screen.blit(task_title, (500, 80))
+        y = 120
+        for task_id, task_name in TASK_LIST.items():
+            task_text = f"{task_id}: {task_name}"
+            t = self.font_sm.render(task_text, True, GRAY)
+            self.screen.blit(t, (500, y))
+            y += 25
+
+        # 操作说明
+        help_title = self.font_md.render("操作说明", True, WHITE)
+        self.screen.blit(help_title, (500, 400))
+        help_texts = [
             "W / S ：前进 / 后退",
             "A / D ：左转 / 右转",
             "数字 1~10 ：执行预设任务",
             "空格 ：紧急停止",
             "ESC ：退出程序"
         ]
-        y = 80
-        for line in desc:
-            t = self.font_sm.render(line, True, GRAY)
+        y = 430
+        for text in help_texts:
+            t = self.font_sm.render(text, True, GRAY)
             self.screen.blit(t, (500, y))
-            y += 28
+            y += 22
+
         pygame.display.flip()
 
     def run(self):
         clock = pygame.time.Clock()
         running = True
-        print("========== 遥控前端启动 ==========")
+        print("========== 人形机器人遥控系统启动 ==========")
         print("W 前进  S 后退  A 左转  D 右转")
         print("数字键 1-0 执行预设任务 | 空格 急停 | ESC 退出")
-        print("==================================")
+        print("==========================================\n")
 
         old_w, old_a, old_s, old_d = False, False, False, False
 
@@ -227,14 +258,14 @@ class RobotRemote:
                     if pygame.K_1 <= event.key <= pygame.K_9:
                         if not self.task_sent:
                             num = event.key - pygame.K_0
-                            print(f"按下 数字 {num}，执行任务{num}")
-                            self.last_tip = f"执行任务 {num}"
+                            print(f"按下 数字 {num}，执行任务: {TASK_LIST[num]}")
+                            self.last_tip = f"执行任务: {TASK_LIST[num]}"
                             self.send_task_cmd(num)
                             self.task_sent = True
                     elif event.key == pygame.K_0:
                         if not self.task_sent:
-                            print("按下 数字 0，执行任务10")
-                            self.last_tip = "执行任务 10"
+                            print("按下 数字 0，执行任务: {TASK_LIST[10]}")
+                            self.last_tip = f"执行任务: {TASK_LIST[10]}"
                             self.send_task_cmd(10)
                             self.task_sent = True
 
@@ -267,7 +298,8 @@ class RobotRemote:
         # 释放资源
         self.udp_socket.close()
         pygame.quit()
-        print("程序已退出")
+        print("程序已安全退出")
 
 if __name__ == "__main__":
     app = RobotRemote()
+    app.run()

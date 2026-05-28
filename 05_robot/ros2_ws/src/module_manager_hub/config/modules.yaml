@@ -1,71 +1,14 @@
 modules:
-  # ==================== 核心驱动层（必须启动） ====================
-  ll_bringup:
-    package_name: "ll_bringup"
-    node_name: "ll_bringup.launch.py"
-    monitor_topic: "/ll_control/heartbeat"
+  leg_controller:
+    node_name: "leg_controller_node"
+    watch_topic: "/leg/state"          # 模块自身话题
     enabled: true
     auto_start: true
-    heartbeat_timeout: 1.0
-    startup_timeout: 5.0
-    max_restart_count: 3
-    # 特殊标记：这是一个launch文件，不是普通节点
-    is_launch_file: true
+    timeout_sec: 1.0
 
-  arm_hand_driver:
-    package_name: "arm_function"
-    node_name: "arm_hand_driver_node"
-    monitor_topic: "/arm/heartbeat"
+  arm_controller:
+    node_name: "arm_controller_node"
+    watch_topic: "/arm/joint_states"   # 模块自身话题
     enabled: true
-    auto_start: true
-    heartbeat_timeout: 1.0
-    startup_timeout: 3.0
-    max_restart_count: 3
-
-  # ==================== 策略部署层（必须启动） ====================
-  humanoid_deploy:
-    package_name: "humanoid_deploy"
-    node_name: "humanoid_deploy_node"
-    monitor_topic: "/deploy/heartbeat"
-    enabled: true
-    auto_start: true
-    heartbeat_timeout: 0.5
-    startup_timeout: 10.0  # ONNX模型加载慢
-    max_restart_count: 2
-
-  # ==================== 仿真层（可选） ====================
-  mujoco_sim2sim:
-    package_name: "humanoid_deploy"
-    node_name: "sim/joy_control.py"
-    monitor_topic: "/sim/heartbeat"
-    enabled: false  # 默认不启动，仿真时手动开启
     auto_start: false
-    heartbeat_timeout: 2.0
-    startup_timeout: 5.0
-    max_restart_count: 2
-    # 特殊标记：直接运行Python脚本
-    is_python_script: true
-    script_path: "/X1/rl_locomotion/humanoid_deploy/sim/joy_control.py"
-
-  # ==================== 调试工具层（可选） ====================
-  arm_replay:
-    package_name: "arm_function"
-    node_name: "arm_replay_node"
-    monitor_topic: "/arm/replay/heartbeat"
-    enabled: false
-    auto_start: false
-    heartbeat_timeout: 5.0
-    startup_timeout: 2.0
-    max_restart_count: 1
-
-  wave_shakehand:
-    package_name: "arm_function"
-    node_name: "wave_or_shakehand.py"
-    monitor_topic: "/arm/demo/heartbeat"
-    enabled: false
-    auto_start: false
-    heartbeat_timeout: 5.0
-    startup_timeout: 2.0
-    max_restart_count: 1
-    is_python_script: true
-    script_path: "/X1/arm/src/arm_function/scripts/wave_or_shakehand.py"
+    timeout_sec: 1.0

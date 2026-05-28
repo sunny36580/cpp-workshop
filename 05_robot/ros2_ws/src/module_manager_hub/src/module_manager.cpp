@@ -106,18 +106,91 @@ void ModuleManager::doReceive()
 }
 
 // 解析UDP字符串指令 格式: 指令名 参数1 参数2 参数3 ...
-void ModuleManager::parseUdpCommand(const std::string &data)
-{
-  RCLCPP_INFO(this->get_logger(), "收到UDP指令: %s", data.c_str());
-  std::istringstream iss(data);
-  std::string cmd;
-  iss >> cmd;
+void ModuleManager::parseUdpCommand(const std::string &data) {
+  // 去除首尾空白和换行
+  std::string cmd = data;
+  cmd.erase(0, cmd.find_first_not_of(" \t\n\r"));
+  cmd.erase(cmd.find_last_not_of(" \t\n\r") + 1);
 
-  std::vector<double> params;
-  double p;
-  while (iss >> p) params.push_back(p);
+  RCLCPP_INFO(this->get_logger(), "收到UDP指令: %s", cmd.c_str());
 
-  dispatchCommand(cmd, params);
+  // 按逗号分割
+  std::vector<std::string> parts;
+  std::stringstream ss(cmd);
+  std::string part;
+  while (std::getline(ss, part, ',')) {
+    parts.push_back(part);
+  }
+
+  if (parts.empty()) {
+    RCLCPP_WARN(this->get_logger(), "空指令，忽略");
+    return;
+  }
+
+  // 解析cmd_type
+  int cmd_type;
+  try {
+    cmd_type = std::stoi(parts[0]);
+  } catch (...) {
+    RCLCPP_WARN(this->get_logger(), "无效的指令类型: %s", parts[0].c_str());
+    return;
+  }
+
+  switch (cmd_type) {
+    // ------------------------------
+    // cmd_type=1: 运动指令
+    // 格式: 1,linear,angular
+    // ------------------------------
+    case 1: {
+      if (parts.size() < 3) {
+        RCLCPP_WARN(this->get_logger(), "运动指令参数不足，需要: 1,linear,angular");
+        return;
+      }
+      try {
+        double linear = std::stod(parts[1]);
+        double angular = std::stod(parts[2]);
+
+        //具体转发逻辑待定，这里先简单转发一个日志
+
+        RCLCPP_INFO(this->get_logger(), "转发运动指令: 线速度=%.2f, 角速度=%.2f", linear, angular);
+      } catch (...) {
+        RCLCPP_WARN(this->get_logger(), "运动指令参数解析失败");
+      }
+      break;
+    }
+
+    // ------------------------------
+    // cmd_type=2: 任务指令
+    // 格式: 2,task_id
+    // ------------------------------
+    case 2: {
+      if (parts.size() < 2) {
+        RCLCPP_WARN(this->get_logger(), "任务指令参数不足，需要: 2,task_id");
+        return;
+      }
+      try {
+        int task_id = std::stoi(parts[1]);
+        //TODO：具体交互逻辑待定，这里先简单转发一个日志
+        RCLCPP_INFO(this->get_logger(), "转发任务指令: 执行任务%d", task_id);
+      } catch (...) {
+        RCLCPP_WARN(this->get_logger(), "任务指令参数解析失败");
+      }
+      break;
+    }
+
+    // ------------------------------
+    // cmd_type=3: 急停指令
+    // 格式: 3
+    // ------------------------------
+    case 3: {
+      RCLCPP_WARN(this->get_logger(), "收到急停指令！已发布");
+      break;
+    }
+
+    default:
+      RCLCPP_WARN(this->get_logger(), "未知指令类型: %d", cmd_type);
+      break;
+  }
 }
 
 // 【核心】仅转发你的自定义消息

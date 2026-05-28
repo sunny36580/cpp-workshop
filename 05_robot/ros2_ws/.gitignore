@@ -43,6 +43,7 @@ cmake-build-release/
 *.swo
 *~
 .DS_Store
+.cache
 
 # =========================
 # 环境 / 临时文件

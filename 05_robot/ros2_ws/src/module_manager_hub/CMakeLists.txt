@@ -14,6 +14,7 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(std_msgs REQUIRED)
+find_package(geometry_msgs REQUIRED)
 find_package(yaml-cpp REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 find_package(Boost REQUIRED COMPONENTS system)
@@ -39,6 +40,7 @@ add_executable(module_manager_node
 ament_target_dependencies(module_manager_node
   rclcpp
   std_msgs
+  geometry_msgs
 )
 
 target_link_libraries(module_manager_node

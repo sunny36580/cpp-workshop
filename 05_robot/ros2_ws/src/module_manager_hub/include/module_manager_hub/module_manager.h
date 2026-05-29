@@ -13,6 +13,9 @@
 #include "module_manager_hub/msg/module_status.hpp"
 #include "module_manager_hub/srv/module_control.hpp"
 #include "module_manager_hub/msg/robotarmcontrol.hpp"
+#include <geometry_msgs/msg/twist.hpp>
+#include <std_msgs/msg/string.hpp>
+#include <std_msgs/msg/bool.hpp>
 
 using boost::asio::ip::udp;
 using boost::asio::buffer;
@@ -73,4 +76,13 @@ private:
 
   // ========== 【仅保留自定义消息发布器】 ==========
   std::map<std::string, rclcpp::Publisher<module_manager_hub::msg::Robotarmcontrol>::SharedPtr> arm_control_pubs_;
+
+  // ========== 遥控制相关（UDP → ROS 话题） ==========
+  rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_pub_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr control_mode_pub_;
+  rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr hw_switch_pub_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr action_cmd_pub_;
+
+  std::string current_mode_;
+  bool hw_switch_state_;
 };

@@ -3,6 +3,7 @@
 #include <map>
 #include <string>
 #include <array>
+#include <vector>
 #include <yaml-cpp/yaml.h>
 
 #include <boost/asio.hpp>
@@ -16,9 +17,13 @@
 #include <std_msgs/msg/string.hpp>
 #include <std_msgs/msg/bool.hpp>
 
-using boost::asio::ip::udp;
 using boost::asio::buffer;
-using boost::array;
+
+// 二进制串口协议常量
+constexpr uint8_t SERIAL_SOF       = 0xAA;
+constexpr size_t  SERIAL_HEADER_LEN = 3;  // SOF + CmdType + PayLen
+constexpr size_t  SERIAL_CHECKSUM_LEN = 1;
+constexpr size_t  SERIAL_BUF_SIZE  = 256;
 
 struct CmdRoute {
   std::string topic;
@@ -39,7 +44,7 @@ private:
   bool stopModule(const std::string &name);
   bool restartModule(const std::string &name);
 
-  // 子进程管理（替代 system()）
+  // 子进程管理
   int execCommand(const std::string &cmd, const std::string &work_dir, int &out_pid);
   bool killProcess(int pid);
   bool isProcessAlive(int pid);
@@ -51,7 +56,7 @@ private:
     const std::shared_ptr<module_manager_hub::srv::ModuleControl::Request> req,
     std::shared_ptr<module_manager_hub::srv::ModuleControl::Response> res);
 
-  // 脚本任务：UDP task 指令触发执行 .sh
+  // 脚本任务
   void loadScriptTasks(const YAML::Node &tasks_node);
   void execScriptTask(const std::string &name);
 
@@ -64,15 +69,23 @@ private:
   rclcpp::Service<module_manager_hub::srv::ModuleControl>::SharedPtr ctrl_srv_;
   rclcpp::TimerBase::SharedPtr monitor_timer_;
 
-  // UDP
-  void initUdpServer();
-  void doReceive();
-  void parseUdpCommand(const std::string &data);
+  // ========== 串口通信（替代 UDP） ==========
+  struct SerialConfig {
+    std::string port = "/dev/ttyUSB0";
+    int baud_rate = 115200;
+  };
+  SerialConfig serial_cfg_;
+
+  void initSerial();
+  void doSerialRead();
+  void parseSerialPacket(const uint8_t *payload, size_t pay_len, uint8_t cmd_type);
+  void sendSerialResponse(uint8_t cmd_type, const uint8_t *payload, size_t payload_len);
+  static uint8_t calcChecksum(const uint8_t *data, size_t len);
 
   boost::asio::io_context io_context_;
-  udp::socket udp_socket_;
-  udp::endpoint remote_endpoint_;
-  std::array<char, 1024> recv_buffer_;
+  boost::asio::serial_port serial_port_;
+  std::array<uint8_t, SERIAL_BUF_SIZE> serial_rx_buf_;
+  std::vector<uint8_t> serial_rx_frame_;  // 帧缓存（跨多次读取拼接）
 
   // 指令路由
   void loadCmdRoute(const YAML::Node &route_node);

@@ -1,7 +1,8 @@
 import pygame
 import sys
 import time
-import socket
+import struct
+import serial
 from enum import Enum
 
 # ====================== 基础配置 ======================
@@ -9,17 +10,22 @@ LINEAR_SPEED_MAX = 1.0
 ANGULAR_SPEED_MAX = 1.5
 CMD_SEND_RATE = 20  # 运动指令发送频率(Hz)，建议10-20Hz
 
-# UDP 配置
-UDP_TARGET_IP = "192.168.182.128"
-UDP_TARGET_PORT = 8888
+# 串口配置（与 C++ 模块管理器一致）
+# Windows 下 CH340 通常是 COM3，改为: SERIAL_PORT = "COM3"
+# Linux  下 CH340 通常是 /dev/ttyUSB0 或 /dev/ttyCH340USB0
+SERIAL_PORT = "/dev/ttyCH340USB0"
+SERIAL_BAUD = 115200
 
-# ====================== 【工程化】指令类型枚举（协议核心） ======================
+# 二进制协议常量（与 C++ 端保持一致）
+SERIAL_SOF = 0xAA
+
+# ====================== 指令类型枚举 ======================
 class CmdType(Enum):
-    MOVE = 1    # 运动控制: 1,线速度,角速度
-    TASK = 2    # 预设任务: 2,任务编号(1-10)
-    STOP = 3    # 紧急停止: 3
+    MOVE = 1    # 运动控制: payload = linear_f32 + angular_f32
+    TASK = 2    # 预设任务: payload = task_id_u8
+    STOP = 3    # 紧急停止: payload 空
 
-# ====================== 10个预设任务定义（完全按照你的需求） ======================
+# ====================== 10个预设任务定义 ======================
 TASK_LIST = {
     1: "握手程序",
     2: "语音交互模式",
@@ -43,6 +49,23 @@ YELLOW = (255, 255, 0)
 BLUE = (0, 150, 255)
 DARK_GRAY = (50, 50, 50)
 # ======================================================
+
+def calc_checksum(data: bytes) -> int:
+    """XOR 校验和，与 C++ 端 calcChecksum 一致"""
+    cs = 0
+    for b in data:
+        cs ^= b
+    return cs
+
+def build_frame(cmd_type: int, payload: bytes = b"") -> bytes:
+    """构建二进制帧: SOF(1) + CmdType(1) + PayLen(1) + Payload(N) + Checksum(1)"""
+    frame = bytes([SERIAL_SOF, cmd_type & 0xFF, len(payload) & 0xFF])
+    frame += payload
+    # 校验和从 CmdType 算到 Payload 末尾
+    cs = calc_checksum(frame[1:])  # 从 CmdType 开始
+    frame += bytes([cs])
+    return frame
+
 
 class RobotRemote:
     def __init__(self):
@@ -76,8 +99,8 @@ class RobotRemote:
         self.last_tip = "等待操作"
 
         # 【核心】运动状态控制
-        self.is_moving = False  # 是否正在运动（有按键按下）
-        self.last_cmd_time = 0  # 上一次发送运动指令的时间
+        self.is_moving = False
+        self.last_cmd_time = 0
 
         # 虚拟按键位置尺寸
         self.k_size = 60
@@ -85,12 +108,25 @@ class RobotRemote:
         self.k_cx = 200
         self.k_cy = 420
 
-        # UDP 初始化
-        self.udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        print(f"✅ UDP 已初始化，目标: {UDP_TARGET_IP}:{UDP_TARGET_PORT}")
+        # 串口初始化
+        try:
+            self.ser = serial.Serial(
+                port=SERIAL_PORT,
+                baudrate=SERIAL_BAUD,
+                bytesize=serial.EIGHTBITS,
+                parity=serial.PARITY_NONE,
+                stopbits=serial.STOPBITS_ONE,
+                timeout=0.01  # 非阻塞读
+            )
+            print(f"✅ 串口已打开: {SERIAL_PORT} @ {SERIAL_BAUD} baud")
+        except Exception as e:
+            print(f"❌ 串口打开失败: {e}")
+            print(f"   请检查 CH340 设备是否已连接，路径是否为 {SERIAL_PORT}")
+            self.ser = None
+
         print(f"✅ 运动指令发送频率: {CMD_SEND_RATE}Hz")
 
-        # 防抖标记：防止单按键重复发包
+        # 防抖标记
         self.task_sent = False
         self.stop_sent = False
 
@@ -108,34 +144,42 @@ class RobotRemote:
         if self.key_d:
             self.angular_vel -= self.angular_cfg
 
-        # 更新运动状态
         self.is_moving = (self.linear_vel != 0 or self.angular_vel != 0)
 
-    # -------------------------- 指令封装 --------------------------
-    def send_udp_msg(self, msg):
-        """通用UDP发送接口"""
+    # -------------------------- 指令封装（二进制协议）--------------------------
+    def send_frame(self, frame: bytes):
+        """通过串口发送二进制帧"""
+        if self.ser is None:
+            return
         try:
-            self.udp_socket.sendto(msg.encode(), (UDP_TARGET_IP, UDP_TARGET_PORT))
-            # print(f"📤 发送: {msg.strip()}")  # 需要调试时取消注释
+            self.ser.write(frame)
         except Exception as e:
-            print(f"❌ UDP 发送失败: {e}")
+            print(f"❌ 串口发送失败: {e}")
 
     def send_move_cmd(self):
-        """发送运动控制指令：1,线速度,角速度"""
+        """发送运动控制指令：
+           帧: 0xAA | 0x01 | 0x08 | linear_f32(LE,4B) | angular_f32(LE,4B) | checksum
+        """
         linear = round(self.linear_vel, 2)
         angular = round(self.angular_vel, 2)
-        msg = f"{CmdType.MOVE.value},{linear},{angular}\n"
-        self.send_udp_msg(msg)
+        payload = struct.pack("<ff", linear, angular)  # 小端 float32 x 2
+        frame = build_frame(CmdType.MOVE.value, payload)
+        self.send_frame(frame)
 
     def send_task_cmd(self, task_num):
-        """发送预设任务指令：2,任务编号"""
-        msg = f"{CmdType.TASK.value},{task_num}\n"
-        self.send_udp_msg(msg)
+        """发送预设任务指令：
+           帧: 0xAA | 0x02 | 0x01 | task_id_u8 | checksum
+        """
+        payload = bytes([task_num & 0xFF])
+        frame = build_frame(CmdType.TASK.value, payload)
+        self.send_frame(frame)
 
     def send_stop_cmd(self):
-        """发送紧急停止指令：3"""
-        msg = f"{CmdType.STOP.value}\n"
-        self.send_udp_msg(msg)
+        """发送紧急停止指令：
+           帧: 0xAA | 0x03 | 0x00 | checksum
+        """
+        frame = build_frame(CmdType.STOP.value)
+        self.send_frame(frame)
         # 急停后重置运动状态
         self.is_moving = False
         self.linear_vel = 0.0
@@ -324,7 +368,8 @@ class RobotRemote:
 
         # 退出前发送一次停止指令
         self.send_move_cmd()
-        self.udp_socket.close()
+        if self.ser:
+            self.ser.close()
         pygame.quit()
         print("程序已安全退出")
 

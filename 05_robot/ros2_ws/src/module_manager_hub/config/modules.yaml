@@ -1,5 +1,10 @@
 # ========== 模块管理器中枢配置 ==========
 
+# ---- 串口通信配置 ----
+serial:
+  port: "/dev/ttyUSB0"
+  baud_rate: 115200
+
 # ---- ROS2 模块 ----
 # launch_type: ros2_run | ros2_launch
 modules:

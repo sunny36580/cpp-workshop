@@ -1,6 +1,8 @@
 #include "module_manager_hub/module_manager.h"
 #include <chrono>
 #include <cstdlib>
+#include <cstring>
+#include <algorithm>
 #include <thread>
 #include <sstream>
 #include <vector>
@@ -10,13 +12,12 @@
 #include <fcntl.h>
 
 using namespace std::chrono_literals;
-using boost::asio::ip::udp;
 
 // =====================================================================
 // 构造函数 & 析构
 // =====================================================================
 ModuleManager::ModuleManager(const std::string &name)
-  : Node(name), udp_socket_(io_context_), current_mode_("STAND"), hw_switch_state_(false)
+  : Node(name), serial_port_(io_context_), current_mode_("STAND"), hw_switch_state_(false)
 {
   // 安装 SIGCHLD 信号处理，自动回收僵尸进程
   struct sigaction sa;
@@ -37,6 +38,14 @@ ModuleManager::ModuleManager(const std::string &name)
   this->get_parameter("config_path", config_path);
   YAML::Node root_cfg = YAML::LoadFile(config_path);
 
+  // 串口配置
+  if (root_cfg["serial"]) {
+    auto s = root_cfg["serial"];
+    if (s["port"])      serial_cfg_.port      = s["port"].as<std::string>();
+    if (s["baud_rate"]) serial_cfg_.baud_rate = s["baud_rate"].as<int>();
+  }
+  RCLCPP_INFO(this->get_logger(), "串口配置: %s @ %d baud", serial_cfg_.port.c_str(), serial_cfg_.baud_rate);
+
   if (root_cfg["modules"])      loadConfig(root_cfg["modules"]);
   if (root_cfg["cmd_route"])    loadCmdRoute(root_cfg["cmd_route"]);
   if (root_cfg["script_tasks"]) loadScriptTasks(root_cfg["script_tasks"]);
@@ -49,7 +58,7 @@ ModuleManager::ModuleManager(const std::string &name)
   hw_switch_pub_  = this->create_publisher<std_msgs::msg::Bool>("/hwswitch", 10);
   action_cmd_pub_ = this->create_publisher<std_msgs::msg::String>("/action_cmd", 10);
 
-  initUdpServer();
+  initSerial();
   std::thread([this]() { io_context_.run(); }).detach();
 
   RCLCPP_INFO(this->get_logger(), "人形机器人中枢启动完成 ✅");
@@ -166,45 +175,108 @@ void ModuleManager::loadCmdRoute(const YAML::Node &route_node)
 }
 
 // =====================================================================
-// UDP
+// 串口通信（替代 UDP）
 // =====================================================================
-void ModuleManager::initUdpServer()
+void ModuleManager::initSerial()
 {
   try {
-    udp_socket_.open(udp::v4());
-    udp_socket_.bind(udp::endpoint(udp::v4(), 8888));
-    doReceive();
-    RCLCPP_INFO(this->get_logger(), "UDP 监听端口: 8888");
+    serial_port_.open(serial_cfg_.port);
+    serial_port_.set_option(boost::asio::serial_port::baud_rate(serial_cfg_.baud_rate));
+    serial_port_.set_option(boost::asio::serial_port::flow_control(boost::asio::serial_port::flow_control::none));
+    serial_port_.set_option(boost::asio::serial_port::parity(boost::asio::serial_port::parity::none));
+    serial_port_.set_option(boost::asio::serial_port::stop_bits(boost::asio::serial_port::stop_bits::one));
+    serial_port_.set_option(boost::asio::serial_port::character_size(8));
+    doSerialRead();
+    RCLCPP_INFO(this->get_logger(), "串口已打开: %s @ %d baud", serial_cfg_.port.c_str(), serial_cfg_.baud_rate);
   } catch (std::exception &e) {
-    RCLCPP_ERROR(this->get_logger(), "UDP 启动失败: %s", e.what());
+    RCLCPP_ERROR(this->get_logger(), "串口打开失败 %s: %s", serial_cfg_.port.c_str(), e.what());
   }
 }
 
-void ModuleManager::doReceive()
+void ModuleManager::doSerialRead()
 {
-  udp_socket_.async_receive_from(buffer(recv_buffer_), remote_endpoint_,
+  serial_port_.async_read_some(buffer(serial_rx_buf_),
     [this](std::error_code ec, std::size_t bytes) {
-      if (!ec && bytes > 0) parseUdpCommand(std::string(recv_buffer_.data(), bytes));
-      doReceive();
+      if (ec) {
+        RCLCPP_ERROR(this->get_logger(), "串口读错误: %s", ec.message().c_str());
+        return;
+      }
+
+      // 将新数据追加到帧缓存
+      serial_rx_frame_.insert(serial_rx_frame_.end(),
+                              serial_rx_buf_.begin(), serial_rx_buf_.begin() + bytes);
+
+      // 尝试从缓存中解析完整帧
+      while (true) {
+        auto &buf = serial_rx_frame_;
+
+        // 找 SOF
+        auto sof_it = std::find(buf.begin(), buf.end(), SERIAL_SOF);
+        if (sof_it == buf.end()) {
+          buf.clear();
+          break;
+        }
+
+        // 扔掉 SOF 之前的数据
+        if (sof_it != buf.begin()) {
+          buf.erase(buf.begin(), sof_it);
+        }
+
+        // 需要至少 SOF(1) + CmdType(1) + PayLen(1) = 3 字节才能知道帧长
+        if (buf.size() < SERIAL_HEADER_LEN) break;
+
+        uint8_t cmd_type  = buf[1];
+        uint8_t pay_len   = buf[2];
+        size_t frame_len  = SERIAL_HEADER_LEN + pay_len + SERIAL_CHECKSUM_LEN;
+
+        if (buf.size() < frame_len) break;  // 还没收完
+
+        // 校验和检查
+        uint8_t recv_cs = buf[frame_len - 1];
+        uint8_t calc_cs = calcChecksum(buf.data() + 1, frame_len - 2);  // 从 CmdType 到 Payload 末尾
+        if (recv_cs != calc_cs) {
+          RCLCPP_WARN(this->get_logger(), "串口帧校验和错误, 丢弃");
+          buf.erase(buf.begin(), buf.begin() + frame_len);
+          continue;
+        }
+
+        // 解析并执行
+        parseSerialPacket(buf.data() + SERIAL_HEADER_LEN, pay_len, cmd_type);
+
+        // 移除已处理的帧
+        buf.erase(buf.begin(), buf.begin() + frame_len);
+      }
+
+      doSerialRead();
     });
 }
 
-void ModuleManager::parseUdpCommand(const std::string &data)
+uint8_t ModuleManager::calcChecksum(const uint8_t *data, size_t len)
 {
-  std::string cmd = data;
-  cmd.erase(0, cmd.find_first_not_of(" \t\n\r"));
-  cmd.erase(cmd.find_last_not_of(" \t\n\r") + 1);
-  RCLCPP_INFO(this->get_logger(), "收到UDP指令: %s", cmd.c_str());
+  uint8_t cs = 0;
+  for (size_t i = 0; i < len; i++) cs ^= data[i];
+  return cs;
+}
 
-  std::vector<std::string> parts;
-  std::stringstream ss(cmd);
-  std::string part;
-  while (std::getline(ss, part, ',')) parts.push_back(part);
-  if (parts.empty()) return;
+void ModuleManager::sendSerialResponse(uint8_t cmd_type, const uint8_t *payload, size_t payload_len)
+{
+  std::vector<uint8_t> frame;
+  frame.push_back(SERIAL_SOF);
+  frame.push_back(cmd_type | 0x80);  // 响应标志：最高位置1
+  frame.push_back(static_cast<uint8_t>(payload_len));
+  frame.insert(frame.end(), payload, payload + payload_len);
+  frame.push_back(calcChecksum(frame.data() + 1, frame.size() - 1));
 
-  int cmd_type;
-  try { cmd_type = std::stoi(parts[0]); }
-  catch (...) { RCLCPP_WARN(this->get_logger(), "无效指令类型"); return; }
+  try {
+    boost::asio::write(serial_port_, boost::asio::buffer(frame));
+  } catch (std::exception &e) {
+    RCLCPP_ERROR(this->get_logger(), "串口写失败: %s", e.what());
+  }
+}
+
+void ModuleManager::parseSerialPacket(const uint8_t *payload, size_t pay_len, uint8_t cmd_type)
+{
+  RCLCPP_INFO(this->get_logger(), "收到串口指令: type=%d, len=%zu", cmd_type, pay_len);
 
   auto publish_mode = [this]() {
     std_msgs::msg::String m; m.data = current_mode_; control_mode_pub_->publish(m);
@@ -214,35 +286,37 @@ void ModuleManager::parseUdpCommand(const std::string &data)
   {
     // ---- cmd_type=1: 运动指令 ----
     case 1: {
-      if (parts.size() < 3) return;
-      try {
-        double linear = std::stod(parts[1]), angular = std::stod(parts[2]);
-        geometry_msgs::msg::Twist t;
-        t.linear.x = linear; t.linear.y = 0; t.angular.z = angular;
-        cmd_vel_pub_->publish(t);
-        if ((std::abs(linear) > 0.001 || std::abs(angular) > 0.001) && current_mode_ == "STAND") {
-          current_mode_ = "WALK_FULL";
-          publish_mode();
-        }
-      } catch (...) {}
+      if (pay_len < 8) { RCLCPP_WARN(this->get_logger(), "运动指令长度不足"); break; }
+      float linear  = 0, angular = 0;
+      memcpy(&linear,  payload,      sizeof(float));
+      memcpy(&angular, payload + 4,  sizeof(float));
+
+      geometry_msgs::msg::Twist t;
+      t.linear.x = linear; t.linear.y = 0; t.angular.z = angular;
+      cmd_vel_pub_->publish(t);
+      if ((std::abs(linear) > 0.001f || std::abs(angular) > 0.001f) && current_mode_ == "STAND") {
+        current_mode_ = "WALK_FULL";
+        publish_mode();
+      }
+      RCLCPP_DEBUG(this->get_logger(), "运动指令: linear=%.3f, angular=%.3f", linear, angular);
       break;
     }
 
     // ---- cmd_type=2: 任务指令 ----
     case 2: {
-      if (parts.size() < 2) return;
-      int task_id = std::stoi(parts[1]);
+      if (pay_len < 1) { RCLCPP_WARN(this->get_logger(), "任务指令长度不足"); break; }
+      uint8_t task_id = payload[0];
 
-      // 先发 action_cmd 话题
+      // 发 action_cmd 话题
       static const char* actions[] = {"WAVE","HANDSHAKE","PERFORM","TURN_180","FINGER_SHOW","WAVE","SMILE","STAND"};
       if (task_id >= 1 && task_id <= 8) {
         std_msgs::msg::String a;
-        a.data = actions[task_id-1];
+        a.data = actions[task_id - 1];
         action_cmd_pub_->publish(a);
         RCLCPP_INFO(this->get_logger(), "转发 action_cmd: %s", a.data.c_str());
       }
 
-      // 如果有同名脚本任务，一并执行
+      // 执行同名脚本任务
       std::string task_name = "task_" + std::to_string(task_id);
       if (script_tasks_.count(task_name) && script_tasks_[task_name].enabled) {
         execScriptTask(task_name);

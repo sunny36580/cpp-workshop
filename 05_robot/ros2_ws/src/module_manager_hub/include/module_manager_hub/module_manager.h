@@ -5,7 +5,6 @@
 #include <array>
 #include <yaml-cpp/yaml.h>
 
-// 正确的 UDP 头文件（boost::asio）
 #include <boost/asio.hpp>
 #include <boost/array.hpp>
 
@@ -21,9 +20,7 @@ using boost::asio::ip::udp;
 using boost::asio::buffer;
 using boost::array;
 
-// 指令路由结构体
-struct CmdRoute
-{
+struct CmdRoute {
   std::string topic;
   std::string msg_type;
 };
@@ -35,30 +32,41 @@ public:
 
 private:
   void loadConfig(const std::string &path);
+  LaunchType parseLaunchType(const std::string &type_str);
+
+  // 模块生命周期
   bool startModule(const std::string &name);
   bool stopModule(const std::string &name);
   bool restartModule(const std::string &name);
 
-  // 通用话题回调：任何话题有数据就更新时间
+  // 子进程管理（替代 system()）
+  int execCommand(const std::string &cmd, const std::string &work_dir, int &out_pid);
+  bool killProcess(int pid);
+  bool isProcessAlive(int pid);
+
   template <typename MsgT>
   void topicCallback(const std::shared_ptr<MsgT>, const std::string &mod_name);
-
   void monitorTimerCallback();
   void publishModuleStatus();
 
   void moduleControlCallback(
     const std::shared_ptr<module_manager_hub::srv::ModuleControl::Request> req,
-    std::shared_ptr<module_manager_hub::srv::ModuleControl::Response> res
-  );
+    std::shared_ptr<module_manager_hub::srv::ModuleControl::Response> res);
 
+  // 脚本任务：UDP task 指令触发执行 .sh
+  void loadScriptTasks(const YAML::Node &tasks_node);
+  void execScriptTask(const std::string &name);
+
+  // ---- 数据成员 ----
   std::map<std::string, Module> modules_;
   std::map<std::string, rclcpp::SubscriptionBase::SharedPtr> topic_subs_;
+  std::map<std::string, ScriptTask> script_tasks_;
 
   rclcpp::Publisher<module_manager_hub::msg::ModuleStatus>::SharedPtr status_pub_;
   rclcpp::Service<module_manager_hub::srv::ModuleControl>::SharedPtr ctrl_srv_;
   rclcpp::TimerBase::SharedPtr monitor_timer_;
 
-  // ========== UDP 服务 ==========
+  // UDP
   void initUdpServer();
   void doReceive();
   void parseUdpCommand(const std::string &data);
@@ -68,16 +76,13 @@ private:
   udp::endpoint remote_endpoint_;
   std::array<char, 1024> recv_buffer_;
 
-  // ========== 指令路由 + 消息分发 ==========
+  // 指令路由
   void loadCmdRoute(const YAML::Node &route_node);
   void dispatchCommand(const std::string &cmd, const std::vector<double> &params);
-
   std::map<std::string, CmdRoute> cmd_routes_;
-
-  // ========== 【仅保留自定义消息发布器】 ==========
   std::map<std::string, rclcpp::Publisher<module_manager_hub::msg::Robotarmcontrol>::SharedPtr> arm_control_pubs_;
 
-  // ========== 遥控制相关（UDP → ROS 话题） ==========
+  // 遥控话题
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_pub_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr control_mode_pub_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr hw_switch_pub_;

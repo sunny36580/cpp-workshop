@@ -18,6 +18,13 @@ using boost::asio::ip::udp;
 ModuleManager::ModuleManager(const std::string &name)
   : Node(name), udp_socket_(io_context_), current_mode_("STAND"), hw_switch_state_(false)
 {
+  // 安装 SIGCHLD 信号处理，自动回收僵尸进程
+  struct sigaction sa;
+  sa.sa_handler = SIG_IGN;
+  sigemptyset(&sa.sa_mask);
+  sa.sa_flags = SA_NOCLDWAIT;
+  sigaction(SIGCHLD, &sa, nullptr);
+
   status_pub_ = this->create_publisher<module_manager_hub::msg::ModuleStatus>("/robot/modules_status", 10);
 
   ctrl_srv_ = this->create_service<module_manager_hub::srv::ModuleControl>(
@@ -30,9 +37,9 @@ ModuleManager::ModuleManager(const std::string &name)
   this->get_parameter("config_path", config_path);
   YAML::Node root_cfg = YAML::LoadFile(config_path);
 
-  loadConfig(config_path);
-  if (root_cfg["cmd_route"])     loadCmdRoute(root_cfg["cmd_route"]);
-  if (root_cfg["script_tasks"])  loadScriptTasks(root_cfg["script_tasks"]);
+  if (root_cfg["modules"])      loadConfig(root_cfg["modules"]);
+  if (root_cfg["cmd_route"])    loadCmdRoute(root_cfg["cmd_route"]);
+  if (root_cfg["script_tasks"]) loadScriptTasks(root_cfg["script_tasks"]);
 
   monitor_timer_ = this->create_wall_timer(500ms, std::bind(&ModuleManager::monitorTimerCallback, this));
 
@@ -51,6 +58,9 @@ ModuleManager::ModuleManager(const std::string &name)
 ModuleManager::~ModuleManager()
 {
   io_context_.stop();
+  // 给 io_context 线程一点时间退出，避免访问已销毁的对象
+  std::this_thread::sleep_for(100ms);
+
   // 清理子进程
   for (auto &p : modules_)
     if (p.second.pid > 0) killProcess(p.second.pid);
@@ -65,14 +75,12 @@ LaunchType ModuleManager::parseLaunchType(const std::string &s)
   return LaunchType::ROS2_RUN;
 }
 
-void ModuleManager::loadConfig(const std::string &path)
+void ModuleManager::loadConfig(const YAML::Node &mods)
 {
-  try {
-    YAML::Node config = YAML::LoadFile(path);
-    const auto &mods = config["modules"];
-    if (!mods) return;
+  if (!mods) return;
 
-    for (const auto &entry : mods) {
+  for (const auto &entry : mods) {
+    try {
       Module m;
       m.name        = entry.first.as<std::string>();
       auto &cfg     = entry.second;
@@ -80,6 +88,7 @@ void ModuleManager::loadConfig(const std::string &path)
       m.package_name = cfg["package"] ? cfg["package"].as<std::string>() : "module_manager_hub";
       m.node_name   = cfg["node_name"] ? cfg["node_name"].as<std::string>() : "";
       m.watch_topic = cfg["watch_topic"] ? cfg["watch_topic"].as<std::string>() : "";
+      m.watch_type  = cfg["watch_type"] ? cfg["watch_type"].as<std::string>() : "";
       m.working_dir = cfg["working_dir"] ? cfg["working_dir"].as<std::string>() : "";
       m.enabled     = cfg["enabled"] ? cfg["enabled"].as<bool>() : false;
       m.auto_start  = cfg["auto_start"] ? cfg["auto_start"].as<bool>() : false;
@@ -102,22 +111,28 @@ void ModuleManager::loadConfig(const std::string &path)
         m.working_dir.c_str()
       );
 
-      // 监控订阅
-      if (!m.watch_topic.empty()) {
-        auto cb = [this, n = m.name](const std::shared_ptr<rclcpp::SerializedMessage>) {
-          if (modules_.count(n)) {
-            modules_[n].last_msg_time = this->now().seconds();
-            modules_[n].online = true;
-            modules_[n].running = true;
-          }
-        };
-        topic_subs_[m.name] = this->create_generic_subscription(m.watch_topic, "rosidl_typesupport_cpp", 10, cb);
-      }
-
       if (m.enabled && m.auto_start) startModule(m.name);
+
+      // 监控订阅（单独 try-catch，不阻塞模块启动）
+      if (!m.watch_topic.empty()) {
+        try {
+          auto cb = [this, n = m.name](const std::shared_ptr<rclcpp::SerializedMessage>) {
+            if (modules_.count(n)) {
+              modules_[n].last_msg_time = this->now().seconds();
+              modules_[n].online = true;
+              modules_[n].running = true;
+            }
+          };
+          std::string type_str = m.watch_type.empty() ? "std_msgs/msg/String" : m.watch_type;
+          topic_subs_[m.name] = this->create_generic_subscription(m.watch_topic, type_str, 10, cb);
+          RCLCPP_INFO(this->get_logger(), "监控模块 %s → %s [%s]", m.name.c_str(), m.watch_topic.c_str(), type_str.c_str());
+        } catch (std::exception &e) {
+          RCLCPP_WARN(this->get_logger(), "监控订阅失败 %s: %s", m.watch_topic.c_str(), e.what());
+        }
+      }
+    } catch (std::exception &e) {
+      RCLCPP_WARN(this->get_logger(), "跳过无效模块配置: %s", e.what());
     }
-  } catch (std::exception &e) {
-    RCLCPP_ERROR(this->get_logger(), "配置加载失败: %s", e.what());
   }
 }
 
@@ -279,26 +294,23 @@ int ModuleManager::execCommand(const std::string &cmd, const std::string &work_d
   if (pid == 0) {
     if (!work_dir.empty()) chdir(work_dir.c_str());
 
-    // ========== 自动 source 工作空间环境 ==========
-    // 如果 work_dir 下有 install/setup.bash，自动 source 后再执行命令
+    // 如果有工作目录且存在 install/setup.bash，自动 source
     std::string full_cmd;
     std::string setup_script = work_dir + "/install/setup.bash";
     if (!work_dir.empty() && access(setup_script.c_str(), F_OK) == 0) {
       full_cmd = "source " + setup_script + " && " + cmd;
-      RCLCPP_DEBUG(this->get_logger(), "自动 source 环境: %s", setup_script.c_str());
     } else {
       full_cmd = cmd;
     }
 
-    int fd = open("/dev/null", O_WRONLY);
-    if (fd >= 0) { dup2(fd, STDOUT_FILENO); dup2(fd, STDERR_FILENO); close(fd); }
+    // 子进程 stdout/stderr 透传给父进程以便排查
     setpgid(0, 0);
     setsid();
     execl("/bin/sh", "sh", "-c", full_cmd.c_str(), (char*)nullptr);
     _exit(127);
   }
   out_pid = pid;
-  RCLCPP_DEBUG(this->get_logger(), "启动子进程 PID=%d: %s", pid, cmd.c_str());
+  RCLCPP_INFO(this->get_logger(), "启动子进程 PID=%d: %s", pid, cmd.c_str());
   return pid;
 }
 
@@ -347,6 +359,7 @@ bool ModuleManager::startModule(const std::string &name)
   int new_pid = 0;
   if (execCommand(cmd, m.working_dir, new_pid) < 0) return false;
   m.pid = new_pid; m.running = true; m.online = true;
+  m.last_msg_time = this->now().seconds();  // 重置超时计数器
   RCLCPP_INFO(this->get_logger(), "模块 %s 已启动 (PID=%d): %s", name.c_str(), new_pid, cmd.c_str());
   return true;
 }
@@ -399,20 +412,30 @@ void ModuleManager::monitorTimerCallback()
     if (!m.enabled) continue;
 
     // 检查进程存活
-    if (m.pid > 0 && !isProcessAlive(m.pid)) {
+    bool process_dead = (m.pid > 0 && !isProcessAlive(m.pid));
+    if (process_dead) {
       RCLCPP_WARN(this->get_logger(), "模块 %s 进程已退出 (PID=%d)", pair.first.c_str(), m.pid);
       m.running = false; m.online = false;
     }
 
-    if (now - m.last_msg_time > m.timeout_sec) {
+    // 超时判定：有 watch_topic 时才做超时检查
+    bool timeout = !m.watch_topic.empty() && (now - m.last_msg_time > m.timeout_sec);
+    if (timeout) {
       m.online = false;
-      if (m.auto_restart && m.running) {
-        auto it = last_restart.find(pair.first);
-        if (it == last_restart.end() || now - it->second > restart_interval) {
-          RCLCPP_WARN(this->get_logger(), "模块 %s 超时，自动重启", pair.first.c_str());
-          restartModule(pair.first);
-          last_restart[pair.first] = now;
-        }
+    }
+
+    // 无 watch_topic 的模块仅靠进程存活判定
+    if (m.watch_topic.empty()) {
+      m.online = m.running;
+    }
+
+    // 自动重启：进程死或超时，只要 auto_restart 就尝试重启
+    if (m.auto_restart && (process_dead || timeout)) {
+      auto it = last_restart.find(pair.first);
+      if (it == last_restart.end() || now - it->second > restart_interval) {
+        RCLCPP_WARN(this->get_logger(), "模块 %s 进程已退出/超时，自动重启", pair.first.c_str());
+        restartModule(pair.first);
+        last_restart[pair.first] = now;
       }
     }
   }

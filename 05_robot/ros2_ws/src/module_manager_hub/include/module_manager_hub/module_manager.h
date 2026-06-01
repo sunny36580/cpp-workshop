@@ -31,7 +31,7 @@ public:
   ~ModuleManager() override;
 
 private:
-  void loadConfig(const std::string &path);
+  void loadConfig(const YAML::Node &mods);
   LaunchType parseLaunchType(const std::string &type_str);
 
   // 模块生命周期
@@ -44,8 +44,6 @@ private:
   bool killProcess(int pid);
   bool isProcessAlive(int pid);
 
-  template <typename MsgT>
-  void topicCallback(const std::shared_ptr<MsgT>, const std::string &mod_name);
   void monitorTimerCallback();
   void publishModuleStatus();
 

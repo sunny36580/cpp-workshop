@@ -24,6 +24,7 @@ struct Module {
   std::string package_name;     // ROS2 包名
   std::string node_name;        // 可执行文件名 或 launch 文件名
   std::string watch_topic;      // 监控的业务话题
+  std::string watch_type;       // 业务话题的消息类型，如 "std_msgs/msg/Bool"
   std::string working_dir;      // 工作目录（可选）
 
   // 控制参数

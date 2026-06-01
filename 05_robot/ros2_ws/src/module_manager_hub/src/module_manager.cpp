@@ -88,6 +88,20 @@ void ModuleManager::loadConfig(const std::string &path)
       m.last_msg_time = this->now().seconds();
       modules_[m.name] = m;
 
+      std::string lt = (m.launch_type == LaunchType::ROS2_LAUNCH) ? "LAUNCH" : "RUN";
+      RCLCPP_INFO(this->get_logger(), 
+        "[MODULE] %-16s | %-6s | %-20s | %-30s | E:%d A:%d R:%d | T:%.1fs| WD: %-30s",
+        m.name.c_str(),
+        lt.c_str(),
+        m.package_name.c_str(),
+        m.node_name.c_str(),
+        m.enabled,
+        m.auto_start,
+        m.auto_restart,
+        m.timeout_sec,
+        m.working_dir.c_str()
+      );
+
       // 监控订阅
       if (!m.watch_topic.empty()) {
         auto cb = [this, n = m.name](const std::shared_ptr<rclcpp::SerializedMessage>) {
@@ -264,11 +278,23 @@ int ModuleManager::execCommand(const std::string &cmd, const std::string &work_d
   if (pid < 0) { RCLCPP_ERROR(this->get_logger(), "fork 失败"); return -1; }
   if (pid == 0) {
     if (!work_dir.empty()) chdir(work_dir.c_str());
+
+    // ========== 自动 source 工作空间环境 ==========
+    // 如果 work_dir 下有 install/setup.bash，自动 source 后再执行命令
+    std::string full_cmd;
+    std::string setup_script = work_dir + "/install/setup.bash";
+    if (!work_dir.empty() && access(setup_script.c_str(), F_OK) == 0) {
+      full_cmd = "source " + setup_script + " && " + cmd;
+      RCLCPP_DEBUG(this->get_logger(), "自动 source 环境: %s", setup_script.c_str());
+    } else {
+      full_cmd = cmd;
+    }
+
     int fd = open("/dev/null", O_WRONLY);
     if (fd >= 0) { dup2(fd, STDOUT_FILENO); dup2(fd, STDERR_FILENO); close(fd); }
     setpgid(0, 0);
     setsid();
-    execl("/bin/sh", "sh", "-c", cmd.c_str(), (char*)nullptr);
+    execl("/bin/sh", "sh", "-c", full_cmd.c_str(), (char*)nullptr);
     _exit(127);
   }
   out_pid = pid;
@@ -308,6 +334,15 @@ bool ModuleManager::startModule(const std::string &name)
     cmd = "ros2 launch " + m.package_name + " " + m.node_name;
   else
     cmd = "ros2 run " + m.package_name + " " + m.node_name;
+
+  // 日志：工作目录 & 自动 source 状态
+  std::string setup_check;
+  if (!m.working_dir.empty()) {
+    std::string setup_script = m.working_dir + "/install/setup.bash";
+    setup_check = (access(setup_script.c_str(), F_OK) == 0) ? " (将自动 source)" : " (无 setup.bash)";
+  }
+  RCLCPP_INFO(this->get_logger(), "启动模块 %s | 工作目录: %s%s",
+              name.c_str(), m.working_dir.empty() ? "(无)" : m.working_dir.c_str(), setup_check.c_str());
 
   int new_pid = 0;
   if (execCommand(cmd, m.working_dir, new_pid) < 0) return false;

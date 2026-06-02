@@ -13,7 +13,7 @@ CMD_SEND_RATE = 20  # 运动指令发送频率(Hz)，建议10-20Hz
 # 串口配置（与 C++ 模块管理器一致）
 # Windows 下 CH340 通常是 COM3，改为: SERIAL_PORT = "COM3"
 # Linux  下 CH340 通常是 /dev/ttyUSB0 或 /dev/ttyCH340USB0
-SERIAL_PORT = "/dev/ttyCH340USB0"
+SERIAL_PORT = "COM3"
 SERIAL_BAUD = 115200
 
 # 二进制协议常量（与 C++ 端保持一致）
@@ -98,9 +98,20 @@ class RobotRemote:
         self.angular_cfg = ANGULAR_SPEED_MAX
         self.last_tip = "等待操作"
 
+        # 加减速参数（预加速 / 预减速）
+        self.linear_accel = 8.0     # 线加速度 (m/s²)，1.0m/s → 约 0.125s 到满速
+        self.angular_accel = 12.0   # 角加速度 (rad/s²)，1.5rad/s → 约 0.125s 到满速
+        self.last_update_time = 0.0  # 上次 update_speed 的时间
+
         # 【核心】运动状态控制
         self.is_moving = False
         self.last_cmd_time = 0
+
+        # 任务指令重发（绕过 CH340 latency timer + 增加可靠性）
+        self.task_retry_count = 0        # 当前剩余重发次数
+        self.task_retry_max = 5          # 总共发 5 次
+        self.task_retry_num = 0          # 当前重发的任务编号
+        self.last_task_time = 0          # 上次任务发送时间
 
         # 虚拟按键位置尺寸
         self.k_size = 60
@@ -131,20 +142,47 @@ class RobotRemote:
         self.stop_sent = False
 
     def update_speed(self):
-        """只更新速度，不发送指令"""
-        self.linear_vel = 0.0
-        self.angular_vel = 0.0
+        """带加减速的平滑速度更新"""
+        now = time.time()
+        dt = now - self.last_update_time if self.last_update_time > 0 else 0.02
+        self.last_update_time = now
+        # 限幅 dt，防止卡顿时速度突变
+        dt = min(dt, 0.1)
 
+        # 1. 计算目标速度（基于按键）
+        target_linear = 0.0
+        target_angular = 0.0
         if self.key_w:
-            self.linear_vel += self.linear_cfg
+            target_linear += self.linear_cfg
         if self.key_s:
-            self.linear_vel -= self.linear_cfg
+            target_linear -= self.linear_cfg
         if self.key_a:
-            self.angular_vel += self.angular_cfg
+            target_angular += self.angular_cfg
         if self.key_d:
-            self.angular_vel -= self.angular_cfg
+            target_angular -= self.angular_cfg
 
-        self.is_moving = (self.linear_vel != 0 or self.angular_vel != 0)
+        # 2. 线性加速/减速逼近目标
+        diff_linear = target_linear - self.linear_vel
+        diff_angular = target_angular - self.angular_vel
+
+        if abs(diff_linear) > 0.001:
+            step = self.linear_accel * dt
+            self.linear_vel += step if diff_linear > 0 else -step
+            # 防止过冲
+            if abs(diff_linear) < step:
+                self.linear_vel = target_linear
+        else:
+            self.linear_vel = target_linear
+
+        if abs(diff_angular) > 0.001:
+            step = self.angular_accel * dt
+            self.angular_vel += step if diff_angular > 0 else -step
+            if abs(diff_angular) < step:
+                self.angular_vel = target_angular
+        else:
+            self.angular_vel = target_angular
+
+        self.is_moving = (abs(self.linear_vel) > 0.001 or abs(self.angular_vel) > 0.001)
 
     # -------------------------- 指令封装（二进制协议）--------------------------
     def send_frame(self, frame: bytes):
@@ -317,13 +355,16 @@ class RobotRemote:
                             num = event.key - pygame.K_0
                             print(f"按下 数字 {num}，执行任务: {TASK_LIST[num]}")
                             self.last_tip = f"执行任务: {TASK_LIST[num]}"
-                            self.send_task_cmd(num)
+                            # 设置重发（立即发第一次 + 后续重复）
+                            self.task_retry_count = self.task_retry_max
+                            self.task_retry_num = num
                             self.task_sent = True
                     elif event.key == pygame.K_0:
                         if not self.task_sent:
                             print(f"按下 数字 0，执行任务: {TASK_LIST[10]}")
                             self.last_tip = f"执行任务: {TASK_LIST[10]}"
-                            self.send_task_cmd(10)
+                            self.task_retry_count = self.task_retry_max
+                            self.task_retry_num = 10
                             self.task_sent = True
 
                     # 空格：急停指令
@@ -338,10 +379,11 @@ class RobotRemote:
                     elif event.key == pygame.K_ESCAPE:
                         running = False
 
-                # 按键抬起，解除防抖
+                # 按键抬起，解除防抖 + 立即停止重发
                 if event.type == pygame.KEYUP:
                     if pygame.K_1 <= event.key <= pygame.K_9 or event.key == pygame.K_0:
                         self.task_sent = False
+                        self.task_retry_count = 0  # 松开立即停止重发
                     if event.key == pygame.K_SPACE:
                         self.stop_sent = False
 
@@ -362,6 +404,17 @@ class RobotRemote:
                 print("所有按键松开，发送停止指令")
                 was_moving = False
             # ==========================================================
+
+            # ===================== 【任务指令重发逻辑】 =====================
+            # 按同样 20Hz 频率重发，绕过 CH340 latency timer
+            if self.task_retry_count > 0:
+                if current_time - self.last_task_time >= 1/CMD_SEND_RATE:
+                    self.send_task_cmd(self.task_retry_num)
+                    self.last_task_time = current_time
+                    self.task_retry_count -= 1
+                    if self.task_retry_count == 0:
+                        self.task_retry_num = 0
+            # =============================================================
 
             self.draw_ui()
             clock.tick(60)

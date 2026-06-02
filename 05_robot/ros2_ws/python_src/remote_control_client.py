@@ -6,9 +6,9 @@ import serial
 from enum import Enum
 
 # ====================== 基础配置 ======================
-LINEAR_SPEED_MAX = 1.0
-ANGULAR_SPEED_MAX = 1.5
-CMD_SEND_RATE = 20  # 运动指令发送频率(Hz)，建议10-20Hz
+LINEAR_SPEED_MAX = 0.6   # 运控节点线速度上限 (m/s)
+ANGULAR_SPEED_MAX = 1.0  # 运控节点角速度上限 (rad/s)
+CMD_SEND_RATE = 10        # 运动指令发送频率(Hz)，CH340限制定在10Hz
 
 # 串口配置（与 C++ 模块管理器一致）
 # Windows 下 CH340 通常是 COM3，改为: SERIAL_PORT = "COM3"
@@ -99,8 +99,8 @@ class RobotRemote:
         self.last_tip = "等待操作"
 
         # 加减速参数（预加速 / 预减速）
-        self.linear_accel = 1.0     # 线加速度 (m/s²)
-        self.angular_accel = 2.0   # 角加速度 (rad/s²)
+        self.linear_accel = 0.2     # 线加速度 (m/s²)，与运控节点一致
+        self.angular_accel = 0.3    # 角加速度 (rad/s²)，与运控节点一致
         self.last_update_time = 0.0  # 上次 update_speed 的时间
 
         # 【核心】运动状态控制

@@ -54,17 +54,17 @@ modules:
     auto_restart: true
     timeout_sec: 5.0
 
-  # 测试用
-  arm_controller:
-    launch_type: "ros2_run"
-    package: "module_manager_hub"
-    node_name: "test_arm_controller_node"
-    watch_topic: "/arm/status"
-    watch_type: "module_manager_hub/msg/Robotarmstatus"
-    enabled: true
-    auto_start: true
-    auto_restart: true
-    timeout_sec: 1.0
+  # # 测试用
+  # arm_controller:
+  #   launch_type: "ros2_run"
+  #   package: "module_manager_hub"
+  #   node_name: "test_arm_controller_node"
+  #   watch_topic: "/arm/status"
+  #   watch_type: "module_manager_hub/msg/Robotarmstatus"
+  #   enabled: true
+  #   auto_start: true
+  #   auto_restart: true
+  #   timeout_sec: 1.0
 
 # ---- 指令路由 ----
 cmd_route:

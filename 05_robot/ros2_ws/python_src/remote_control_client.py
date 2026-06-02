@@ -99,8 +99,8 @@ class RobotRemote:
         self.last_tip = "等待操作"
 
         # 加减速参数（预加速 / 预减速）
-        self.linear_accel = 8.0     # 线加速度 (m/s²)，1.0m/s → 约 0.125s 到满速
-        self.angular_accel = 12.0   # 角加速度 (rad/s²)，1.5rad/s → 约 0.125s 到满速
+        self.linear_accel = 1.0     # 线加速度 (m/s²)
+        self.angular_accel = 2.0   # 角加速度 (rad/s²)
         self.last_update_time = 0.0  # 上次 update_speed 的时间
 
         # 【核心】运动状态控制

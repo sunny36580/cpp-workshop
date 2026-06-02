@@ -276,7 +276,7 @@ void ModuleManager::sendSerialResponse(uint8_t cmd_type, const uint8_t *payload,
 
 void ModuleManager::parseSerialPacket(const uint8_t *payload, size_t pay_len, uint8_t cmd_type)
 {
-  RCLCPP_INFO(this->get_logger(), "收到串口指令: type=%d, len=%zu", cmd_type, pay_len);
+  // RCLCPP_INFO(this->get_logger(), "收到串口指令: type=%d, len=%zu", cmd_type, pay_len);
 
   auto publish_mode = [this]() {
     std_msgs::msg::String m; m.data = current_mode_; control_mode_pub_->publish(m);
@@ -298,7 +298,7 @@ void ModuleManager::parseSerialPacket(const uint8_t *payload, size_t pay_len, ui
         current_mode_ = "WALK_FULL";
         publish_mode();
       }
-      RCLCPP_DEBUG(this->get_logger(), "运动指令: linear=%.3f, angular=%.3f", linear, angular);
+      RCLCPP_INFO(this->get_logger(), "运动指令: linear=%.3f, angular=%.3f", linear, angular);
       break;
     }
 

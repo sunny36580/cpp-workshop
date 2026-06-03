@@ -54,6 +54,18 @@ modules:
     auto_restart: true
     timeout_sec: 5.0
 
+  # USB相机推流（由模块管理器自动启动/监控）
+  usb_camera:
+    launch_type: "ros2_run"
+    package: "module_manager_hub"
+    node_name: "usb_camera_sender_node"
+    watch_topic: "/camera/status"
+    watch_type: "std_msgs/msg/Bool"
+    enabled: true
+    auto_start: true
+    auto_restart: true
+    timeout_sec: 3.0
+
   # # 测试用
   # arm_controller:
   #   launch_type: "ros2_run"

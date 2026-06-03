@@ -101,4 +101,8 @@ private:
 
   std::string current_mode_;
   bool hw_switch_state_;
+
+  // ---- 防误触（按键防抖） ----
+  static constexpr double TASK_CMD_DEBOUNCE_SEC = 2.0;  // 数字键命令2秒内只响应第一个
+  double last_task_cmd_time_ = 0.0;
 };

@@ -3,12 +3,19 @@ import sys
 import time
 import struct
 import serial
+import socket
+import threading
+import io
 from enum import Enum
 
 # ====================== 基础配置 ======================
 LINEAR_SPEED_MAX = 0.6   # 运控节点线速度上限 (m/s)
 ANGULAR_SPEED_MAX = 1.0  # 运控节点角速度上限 (rad/s)
-CMD_SEND_RATE = 10        # 运动指令发送频率(Hz)，CH340限制定在10Hz
+CMD_SEND_RATE = 20        # 运动指令发送频率(Hz)
+
+# 相机推流配置
+CAMERA_IP = "192.168.9.253"   # 机端IP地址
+CAMERA_PORT = 8888             # 机端相机推流端口
 
 # 串口配置（与 C++ 模块管理器一致）
 # Windows 下 CH340 通常是 COM3，改为: SERIAL_PORT = "COM3"
@@ -113,6 +120,13 @@ class RobotRemote:
         self.task_retry_num = 0          # 当前重发的任务编号
         self.last_task_time = 0          # 上次任务发送时间
 
+        # 相机画面（按C键切换）
+        self.camera_active = False
+        self.camera_frame = None
+        self.camera_sock = None
+        self.camera_thread = None
+        self.camera_running = False
+
         # 虚拟按键位置尺寸
         self.k_size = 60
         self.k_gap = 10
@@ -212,6 +226,89 @@ class RobotRemote:
         frame = build_frame(CmdType.TASK.value, payload)
         self.send_frame(frame)
 
+    # -------------------------- 相机画面 --------------------------
+    def toggle_camera(self):
+        """切换相机画面"""
+        if self.camera_active:
+            self.stop_camera()
+        else:
+            self.start_camera()
+
+    def start_camera(self):
+        """启动相机接收线程"""
+        self.camera_active = True
+        self.camera_running = True
+        self.last_tip = "相机连接中..."
+        self.camera_thread = threading.Thread(target=self.camera_loop, daemon=True)
+        self.camera_thread.start()
+
+    def stop_camera(self):
+        """停止相机接收"""
+        self.camera_running = False
+        self.camera_active = False
+        if self.camera_sock:
+            try: self.camera_sock.close()
+            except: pass
+            self.camera_sock = None
+        self.camera_frame = None
+        self.last_tip = "相机已关闭"
+
+    def camera_loop(self):
+        """相机接收线程：TCP连接 → 收帧 → 解码 → 显示"""
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(5.0)
+            sock.connect((CAMERA_IP, CAMERA_PORT))
+            self.camera_sock = sock
+            self.last_tip = "相机已连接"
+            print("✅ 相机已连接")
+
+            while self.camera_running:
+                try:
+                    # 读4字节数据长度
+                    len_data = sock.recv(4)
+                    if not len_data: break
+                    length = int.from_bytes(len_data, 'big')
+                    if length > 500000:  # 防异常大包
+                        continue
+
+                    # 读完整图像数据
+                    data = b''
+                    while len(data) < length:
+                        packet = sock.recv(length - len(data))
+                        if not packet: break
+                        data += packet
+
+                    if len(data) != length:
+                        break
+
+                    # JPEG解码为pygame Surface，缩放适配右侧区域
+                    raw = pygame.image.load(io.BytesIO(data))
+                    self.camera_frame = pygame.transform.smoothscale(raw, (280, 350))
+                except socket.timeout:
+                    continue
+                except Exception as e:
+                    print(f"❌ 相机帧解码失败: {e}")
+                    break
+
+        except socket.timeout:
+            self.last_tip = "相机连接超时"
+            print("❌ 相机连接超时")
+        except ConnectionRefusedError:
+            self.last_tip = "相机服务未启动"
+            print("❌ 相机服务未启动")
+        except Exception as e:
+            self.last_tip = f"相机错误: {e}"
+            print(f"❌ 相机连接失败: {e}")
+        finally:
+            self.camera_running = False
+            self.camera_active = False
+            if self.camera_sock:
+                try: self.camera_sock.close()
+                except: pass
+                self.camera_sock = None
+            print("📷 相机已断开")
+
     def send_stop_cmd(self):
         """发送紧急停止指令：
            帧: 0xAA | 0x03 | 0x00 | checksum
@@ -253,7 +350,7 @@ class RobotRemote:
         self.screen.fill(BLACK)
         title = self.font_lg.render("人形机器人遥控系统", True, WHITE)
         self.screen.blit(title, (self.win_w//2 - title.get_width()//2, 20))
-        state = self.font_md.render("UDP 遥控模式", True, YELLOW)
+        state = self.font_md.render("串口遥控模式", True, YELLOW)
         self.screen.blit(state, (40, 80))
         speed_cfg = self.font_md.render(
             f"线速度上限: {self.linear_cfg:.1f} m/s  角速度上限: {self.angular_cfg:.1f} rad/s",
@@ -268,32 +365,44 @@ class RobotRemote:
         self.draw_key("A", self.k_cx - self.k_size - self.k_gap, self.k_cy, self.key_a)
         self.draw_key("S", self.k_cx, self.k_cy, self.key_s)
         self.draw_key("D", self.k_cx + self.k_size + self.k_gap, self.k_cy, self.key_d)
-        
-        # 右侧任务列表
-        task_title = self.font_md.render("预设任务列表", True, WHITE)
-        self.screen.blit(task_title, (500, 80))
-        y = 120
-        for task_id, task_name in TASK_LIST.items():
-            task_text = f"{task_id}: {task_name}"
-            t = self.font_sm.render(task_text, True, GRAY)
-            self.screen.blit(t, (500, y))
-            y += 25
 
-        # 操作说明
-        help_title = self.font_md.render("操作说明", True, WHITE)
-        self.screen.blit(help_title, (500, 400))
-        help_texts = [
-            "W / S ：前进 / 后退",
-            "A / D ：左转 / 右转",
-            "数字 1~10 ：执行预设任务",
-            "空格 ：紧急停止",
-            "ESC ：退出程序"
-        ]
-        y = 430
-        for text in help_texts:
-            t = self.font_sm.render(text, True, GRAY)
-            self.screen.blit(t, (500, y))
-            y += 22
+        # ========== 右侧区域 ==========
+        if self.camera_active and self.camera_frame:
+            # 显示相机画面
+            cam_x, cam_y = 510, 70
+            # 画边框
+            pygame.draw.rect(self.screen, BLUE, (cam_x-5, cam_y-5, 290, 360), 2, border_radius=4)
+            self.screen.blit(self.camera_frame, (cam_x, cam_y))
+            # 状态指示
+            cam_label = self.font_sm.render("📷 相机画面 [C键切换]", True, GREEN)
+            self.screen.blit(cam_label, (cam_x, cam_y + 355))
+        else:
+            # 预设任务列表
+            task_title = self.font_md.render("预设任务列表", True, WHITE)
+            self.screen.blit(task_title, (500, 80))
+            y = 120
+            for task_id, task_name in TASK_LIST.items():
+                task_text = f"{task_id}: {task_name}"
+                t = self.font_sm.render(task_text, True, GRAY)
+                self.screen.blit(t, (500, y))
+                y += 25
+
+            # 操作说明
+            help_title = self.font_md.render("操作说明", True, WHITE)
+            self.screen.blit(help_title, (500, 400))
+            help_texts = [
+                "W / S ：前进 / 后退",
+                "A / D ：左转 / 右转",
+                "数字 1~10 ：执行预设任务",
+                "空格 ：紧急停止",
+                "C   ：切换相机画面",
+                "ESC ：退出程序"
+            ]
+            y = 430
+            for text in help_texts:
+                t = self.font_sm.render(text, True, GRAY)
+                self.screen.blit(t, (500, y))
+                y += 22
 
         pygame.display.flip()
 
@@ -375,6 +484,10 @@ class RobotRemote:
                             self.send_stop_cmd()
                             self.stop_sent = True
 
+                    # C 键切换相机画面
+                    elif event.key == pygame.K_c:
+                        self.toggle_camera()
+
                     # ESC 退出
                     elif event.key == pygame.K_ESCAPE:
                         running = False
@@ -419,7 +532,8 @@ class RobotRemote:
             self.draw_ui()
             clock.tick(60)
 
-        # 退出前发送一次停止指令
+        # 退出前关闭相机和串口
+        self.stop_camera()
         self.send_move_cmd()
         if self.ser:
             self.ser.close()

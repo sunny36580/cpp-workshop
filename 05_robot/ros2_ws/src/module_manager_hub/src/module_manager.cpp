@@ -302,8 +302,17 @@ void ModuleManager::parseSerialPacket(const uint8_t *payload, size_t pay_len, ui
       break;
     }
 
-    // ---- cmd_type=2: 任务指令 ----
+    // ---- cmd_type=2: 任务指令（数字键） ----
     case 2: {
+      // 防误触：2秒内连续的数字键命令只响应第一个
+      double now = this->now().seconds();
+      if (now - last_task_cmd_time_ < TASK_CMD_DEBOUNCE_SEC) {
+        RCLCPP_WARN(this->get_logger(), "防误触: 忽略连续任务指令 (距上次 %.2fs < %.1fs)",
+                    now - last_task_cmd_time_, TASK_CMD_DEBOUNCE_SEC);
+        break;
+      }
+      last_task_cmd_time_ = now;
+
       if (pay_len < 1) { RCLCPP_WARN(this->get_logger(), "任务指令长度不足"); break; }
       uint8_t task_id = payload[0];
 

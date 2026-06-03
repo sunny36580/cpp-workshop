@@ -58,10 +58,9 @@ ModuleManager::ModuleManager(const std::string &name)
   hw_switch_pub_  = this->create_publisher<std_msgs::msg::Bool>("/hwswitch", 10);
   action_cmd_pub_ = this->create_publisher<std_msgs::msg::String>("/action_cmd", 10);
 
-  // 50Hz 速度插值定时器（平滑输出 cmd_vel）
-  speed_timer_ = this->create_wall_timer(
-    std::chrono::duration<double>(1.0 / SPEED_INTERPOLATE_HZ),
-    std::bind(&ModuleManager::interpolateSpeedCallback, this));
+  // 50Hz 速度插值线程（独立线程 + Rate 精确控制）
+  speed_running_ = true;
+  speed_thread_ = std::thread(&ModuleManager::interpolateSpeedLoop, this);
 
   initSerial();
   io_thread_ = std::thread([this]() { io_context_.run(); });
@@ -72,6 +71,9 @@ ModuleManager::ModuleManager(const std::string &name)
 
 ModuleManager::~ModuleManager()
 {
+  speed_running_ = false;
+  if (speed_thread_.joinable()) speed_thread_.join();
+
   // 先关串口，触发所有挂起的 async_read 以 operation_aborted 返回
   if (serial_port_.is_open()) {
     boost::system::error_code ec;
@@ -316,7 +318,7 @@ void ModuleManager::parseSerialPacket(const uint8_t *payload, size_t pay_len, ui
         current_mode_ = "WALK_FULL";
         publish_mode();
       }
-      RCLCPP_INFO(this->get_logger(), "运动指令: linear=%.3f, angular=%.3f", target_linear_, target_angular_);
+      RCLCPP_INFO(this->get_logger(), "运动指令: linear=%.3f, angular=%.3f", target_linear_.load(), target_angular_.load());
       break;
     }
 
@@ -504,42 +506,52 @@ void ModuleManager::execScriptTask(const std::string &name)
 // =====================================================================
 // 监控
 // =====================================================================
-// 速度插值：50Hz 以恒定加减速逼近目标速度
+// 速度插值独立线程：50Hz 以恒定加减速逼近目标速度
 // =====================================================================
-void ModuleManager::interpolateSpeedCallback()
+void ModuleManager::interpolateSpeedLoop()
 {
-  const double dt = 1.0 / SPEED_INTERPOLATE_HZ;  // 0.02s
+  rclcpp::Rate rate(SPEED_INTERPOLATE_HZ);
+  constexpr double dt = 0.02;  // 50Hz 固定步长
 
-  // ---- 线速度插值 ----
-  if (std::abs(target_linear_ - current_linear_) < 0.001f) {
-    current_linear_ = target_linear_;
-  } else {
-    float step = LINEAR_ACCEL * dt;
-    if (target_linear_ > current_linear_) {
-      current_linear_ = std::min(current_linear_ + step, target_linear_);
+  while (rclcpp::ok() && speed_running_) {
+
+    // 原子变量快照（避免跨线程反复读取 atomic 导致性能问题）
+    float tgt_linear  = target_linear_.load(std::memory_order_relaxed);
+    float tgt_angular = target_angular_.load(std::memory_order_relaxed);
+
+    // ---- 线速度插值 ----
+    if (std::abs(tgt_linear - current_linear_) < 0.001f) {
+      current_linear_ = tgt_linear;
     } else {
-      current_linear_ = std::max(current_linear_ - step, target_linear_);
+      float step = LINEAR_ACCEL * dt;
+      if (tgt_linear > current_linear_) {
+        current_linear_ = std::min(current_linear_ + step, tgt_linear);
+      } else {
+        current_linear_ = std::max(current_linear_ - step, tgt_linear);
+      }
     }
-  }
 
-  // ---- 角速度插值 ----
-  if (std::abs(target_angular_ - current_angular_) < 0.001f) {
-    current_angular_ = target_angular_;
-  } else {
-    float step = ANGULAR_ACCEL * dt;
-    if (target_angular_ > current_angular_) {
-      current_angular_ = std::min(current_angular_ + step, target_angular_);
+    // ---- 角速度插值 ----
+    if (std::abs(tgt_angular - current_angular_) < 0.001f) {
+      current_angular_ = tgt_angular;
     } else {
-      current_angular_ = std::max(current_angular_ - step, target_angular_);
+      float step = ANGULAR_ACCEL * dt;
+      if (tgt_angular > current_angular_) {
+        current_angular_ = std::min(current_angular_ + step, tgt_angular);
+      } else {
+        current_angular_ = std::max(current_angular_ - step, tgt_angular);
+      }
     }
-  }
 
-  // ---- 发布 cmd_vel ----
-  geometry_msgs::msg::Twist t;
-  t.linear.x = current_linear_;
-  t.linear.y = 0.0;
-  t.angular.z = current_angular_;
-  cmd_vel_pub_->publish(t);
+    // ---- 发布 cmd_vel ----
+    geometry_msgs::msg::Twist t;
+    t.linear.x = current_linear_;
+    t.linear.y = 0.0;
+    t.angular.z = current_angular_;
+    cmd_vel_pub_->publish(t);
+
+    rate.sleep();
+  }
 }
 
 // =====================================================================

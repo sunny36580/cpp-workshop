@@ -4,6 +4,7 @@
 #include <string>
 #include <array>
 #include <vector>
+#include <atomic>
 #include <yaml-cpp/yaml.h>
 
 #include <boost/asio.hpp>
@@ -115,13 +116,15 @@ private:
   static constexpr double LINEAR_MAX    = 0.6;            // 线速度上限 m/s
   static constexpr double ANGULAR_MAX   = 1.0;            // 角速度上限 rad/s
 
-  void interpolateSpeedCallback();
+  void interpolateSpeedLoop();
 
   rclcpp::TimerBase::SharedPtr speed_timer_;
+  std::thread speed_thread_;
+  std::atomic<bool> speed_running_{false};
 
-  // 目标速度（每次收到串口控制指令更新）
-  float target_linear_  = 0.0f;
-  float target_angular_ = 0.0f;
+  // 目标速度（每次收到串口控制指令更新，原子变量跨线程安全）
+  std::atomic<float> target_linear_{0.0f};
+  std::atomic<float> target_angular_{0.0f};
 
   // 当前实际输出速度（插值逐步逼近 target）
   float current_linear_  = 0.0f;

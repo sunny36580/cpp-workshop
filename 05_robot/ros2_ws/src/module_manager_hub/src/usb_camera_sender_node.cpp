@@ -58,9 +58,10 @@ public:
     ~CameraStreamer() override
     {
         running_ = false;
+        // 先关 server socket 让 accept() 返回，再 join 线程
+        if (server_fd_ > 0) { close(server_fd_); server_fd_ = -1; }
         if (stream_thread_.joinable()) stream_thread_.join();
-        if (client_fd_ > 0) close(client_fd_);
-        if (server_fd_ > 0) close(server_fd_);
+        if (client_fd_ > 0) { close(client_fd_); client_fd_ = -1; }
         cleanupEncoder();
     }
 
@@ -155,16 +156,25 @@ private:
         if (server_fd_ == -1) return false;
         int opt = 1;
         setsockopt(server_fd_, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+#ifdef SO_REUSEPORT
+        setsockopt(server_fd_, SOL_SOCKET, SO_REUSEPORT, &opt, sizeof(opt));
+#endif
         sockaddr_in addr{};
         addr.sin_family = AF_INET;
         addr.sin_port = htons(port_);
         addr.sin_addr.s_addr = INADDR_ANY;
-        if (bind(server_fd_, (sockaddr*)&addr, sizeof(addr)) == -1) {
-            RCLCPP_ERROR(this->get_logger(), "端口 %d 绑定失败", port_);
-            return false;
+
+        // 重试绑定，应对端口 TIME_WAIT
+        for (int retry = 0; retry < 5; retry++) {
+            if (bind(server_fd_, (sockaddr*)&addr, sizeof(addr)) == 0) {
+                listen(server_fd_, 1);
+                return true;
+            }
+            RCLCPP_WARN(this->get_logger(), "端口 %d 绑定失败，重试 %d/5...", port_, retry+1);
+            std::this_thread::sleep_for(std::chrono::seconds(1));
         }
-        listen(server_fd_, 1);
-        return true;
+        RCLCPP_ERROR(this->get_logger(), "端口 %d 绑定失败（已重试5次）", port_);
+        return false;
     }
 
     void publishHeartbeat()

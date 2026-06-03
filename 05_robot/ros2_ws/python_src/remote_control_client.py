@@ -162,9 +162,11 @@ class RobotRemote:
             self.ser = None
 
         self.module_statuses = {m: False for m in MODULE_IDS}
-        self.serial_connected = self.ser is not None
+        self.dtu_connected = self.ser is not None
+        self.lan_connected = False
         if self.ser:
             threading.Thread(target=self.serial_rx_loop, daemon=True).start()
+        threading.Thread(target=self.lan_check_loop, daemon=True).start()
 
         print(f"✅ 运动指令发送频率: {CMD_SEND_RATE}Hz")
 
@@ -172,11 +174,34 @@ class RobotRemote:
         self.task_sent = False
         self.stop_sent = False
 
+    # -------------------------- LAN 链路探测 (SSH 22) --------------------------
+    def lan_check_loop(self):
+        """每3秒尝试TCP连接SSH端口判断局域网通断"""
+        while True:
+            try:
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s.settimeout(2.0)
+                s.connect((CAMERA_IP, 22))
+                s.close()
+                self.lan_connected = True
+            except Exception:
+                self.lan_connected = False
+            time.sleep(3.0)
+
     # -------------------------- 串口接收（解析C++回发的状态） --------------------------
     def serial_rx_loop(self):
+        rx_count = 0
+        last_rx = time.time()
         while self.ser and self.ser.is_open:
             try:
                 if self.ser.read(1) != bytes([SERIAL_SOF]):
+                    # 超时检测：2.5秒没收到 C++ 心跳 → 标记离线
+                    if last_rx > 0 and time.time() - last_rx > 2.5:
+                        print("[TIMEOUT] C++ 心跳超时，标记离线")
+                        self.dtu_connected = False
+                        for name in self.module_statuses:
+                            self.module_statuses[name] = False
+                        last_rx = 0
                     continue
                 rest = self.ser.read(2)
                 if len(rest) < 2: continue
@@ -188,15 +213,23 @@ class RobotRemote:
                 calc_cs = 0
                 for x in rest + data: calc_cs ^= x
                 if calc_cs != recv_cs: continue
+                # 任何有效帧都刷新心跳计时（C++ 每 ~500ms 发 0xF0）
+                self.dtu_connected = True
+                last_rx = time.time()
                 if cmd_type == 0xF0 and pay_len >= 4:
                     mask = (data[1] << 8) | data[2]
                     for i, name in enumerate(MODULE_IDS):
                         self.module_statuses[name] = bool(mask & (1 << i))
-                    self.serial_connected = True
+                    rx_count += 1
+                    if rx_count % 10 == 0:
+                        print(f"[STATUS] 第{rx_count}次心跳, 模块在线: {sum(1 for v in self.module_statuses.values() if v)}")
+                else:
+                    # 收到非F0帧（来自C++的其他响应或噪声）
+                    pass
             except serial.SerialException:
-                self.serial_connected = False; time.sleep(0.5)
+                self.dtu_connected = False; time.sleep(0.5)
             except Exception: pass
-        self.serial_connected = False
+        self.dtu_connected = False
 
     def update_speed(self):
         """带加减速的平滑速度更新"""
@@ -402,9 +435,11 @@ class RobotRemote:
         self.screen.fill(BLACK)
         title = self.font_lg.render("人形机器人遥控系统", True, WHITE)
         self.screen.blit(title, (self.win_w//2 - title.get_width()//2, 20))
-        # 通信状态
-        conn = "🟢 通信在线" if self.serial_connected else "🔴 通信断开"
-        self.screen.blit(self.font_md.render(conn, True, GREEN if self.serial_connected else RED), (40, 80))
+        # 通信状态: DTU 无线串口 + LAN 局域网
+        dtu = "DTU OK" if self.dtu_connected else "DTU LOST"
+        lan = "LAN OK" if self.lan_connected else "LAN LOST"
+        self.screen.blit(self.font_md.render(dtu, True, GREEN if self.dtu_connected else RED), (40, 80))
+        self.screen.blit(self.font_md.render(lan, True, GREEN if self.lan_connected else RED), (200, 80))
         # 模块状态
         mod_y = 110
         online_n = sum(1 for v in self.module_statuses.values() if v)
@@ -412,8 +447,9 @@ class RobotRemote:
         self.screen.blit(self.font_sm.render(f"模块: {online_n}/{total_n}", True, WHITE), (40, mod_y))
         mod_y += 18
         for name, on in self.module_statuses.items():
-            txt = f"  {'🟢' if on else '🔴'} {name}"
-            self.screen.blit(self.font_sm.render(txt, True, GRAY), (40, mod_y))
+            color = GREEN if on else RED
+            txt = f"  {'[ON]' if on else '[OFF]'} {name}"
+            self.screen.blit(self.font_sm.render(txt, True, color), (40, mod_y))
             mod_y += 18
         if mod_y < 200: mod_y = 200
         speed_cfg = self.font_md.render(

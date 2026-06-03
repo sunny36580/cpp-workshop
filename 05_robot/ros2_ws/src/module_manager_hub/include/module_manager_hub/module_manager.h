@@ -85,6 +85,7 @@ private:
 
   boost::asio::io_context io_context_;
   boost::asio::serial_port serial_port_;
+  std::thread io_thread_;  // io_context 运行线程
   std::array<uint8_t, SERIAL_BUF_SIZE> serial_rx_buf_;
   std::vector<uint8_t> serial_rx_frame_;  // 帧缓存（跨多次读取拼接）
 

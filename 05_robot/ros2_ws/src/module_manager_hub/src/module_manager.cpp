@@ -59,16 +59,21 @@ ModuleManager::ModuleManager(const std::string &name)
   action_cmd_pub_ = this->create_publisher<std_msgs::msg::String>("/action_cmd", 10);
 
   initSerial();
-  std::thread([this]() { io_context_.run(); }).detach();
+  io_thread_ = std::thread([this]() { io_context_.run(); });
+
 
   RCLCPP_INFO(this->get_logger(), "人形机器人中枢启动完成 ✅");
 }
 
 ModuleManager::~ModuleManager()
 {
+  // 先关串口，触发所有挂起的 async_read 以 operation_aborted 返回
+  if (serial_port_.is_open()) {
+    boost::system::error_code ec;
+    serial_port_.close(ec);
+  }
   io_context_.stop();
-  // 给 io_context 线程一点时间退出，避免访问已销毁的对象
-  std::this_thread::sleep_for(100ms);
+  if (io_thread_.joinable()) io_thread_.join();
 
   // 清理子进程
   for (auto &p : modules_)
@@ -198,7 +203,11 @@ void ModuleManager::doSerialRead()
   serial_port_.async_read_some(buffer(serial_rx_buf_),
     [this](std::error_code ec, std::size_t bytes) {
       if (ec) {
-        RCLCPP_ERROR(this->get_logger(), "串口读错误: %s", ec.message().c_str());
+        serial_rx_frame_.clear();
+        if (rclcpp::ok()) {
+          RCLCPP_WARN(this->get_logger(), "串口读错误，恢复中: %s", ec.message().c_str());
+          doSerialRead();
+        }
         return;
       }
 
@@ -262,15 +271,16 @@ void ModuleManager::sendSerialResponse(uint8_t cmd_type, const uint8_t *payload,
 {
   std::vector<uint8_t> frame;
   frame.push_back(SERIAL_SOF);
-  frame.push_back(cmd_type | 0x80);  // 响应标志：最高位置1
+  frame.push_back(cmd_type | 0x80);
   frame.push_back(static_cast<uint8_t>(payload_len));
   frame.insert(frame.end(), payload, payload + payload_len);
   frame.push_back(calcChecksum(frame.data() + 1, frame.size() - 1));
 
-  try {
-    boost::asio::write(serial_port_, boost::asio::buffer(frame));
-  } catch (std::exception &e) {
-    RCLCPP_ERROR(this->get_logger(), "串口写失败: %s", e.what());
+  boost::system::error_code ec;
+  boost::asio::write(serial_port_, boost::asio::buffer(frame), ec);
+  if (ec) {
+    RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
+      "串口写失败: %s", ec.message().c_str());
   }
 }
 
@@ -528,17 +538,20 @@ void ModuleManager::monitorTimerCallback()
 
 void ModuleManager::sendSerialStatus()
 {
-  static const char* mod_ids[] = {
-    "lower_body", "upper_body", "imu_driver",
-    "remote_interface", "usb_camera", nullptr
-  };
-  uint16_t mask = 0;
-  for (int i = 0; mod_ids[i] != nullptr; i++) {
-    if (modules_.count(mod_ids[i]) && modules_[mod_ids[i]].online)
-      mask |= (1 << i);
-  }
-  uint8_t payload[4] = {0x01, (uint8_t)(mask >> 8), (uint8_t)(mask & 0xFF), 0x00};
-  sendSerialResponse(0xF0, payload, 4);
+  // 投递到 io_context 线程执行，避免和 async_read 冲突
+  boost::asio::post(io_context_, [this]() {
+    static const char* mod_ids[] = {
+      "lower_body", "upper_body", "imu_driver",
+      "remote_interface", "usb_camera", nullptr
+    };
+    uint16_t mask = 0;
+    for (int i = 0; mod_ids[i] != nullptr; i++) {
+      if (modules_.count(mod_ids[i]) && modules_[mod_ids[i]].online)
+        mask |= (1 << i);
+    }
+    uint8_t payload[4] = {0x01, (uint8_t)(mask >> 8), (uint8_t)(mask & 0xFF), 0x00};
+    sendSerialResponse(0xF0, payload, 4);
+  });
 }
 
 void ModuleManager::publishModuleStatus()

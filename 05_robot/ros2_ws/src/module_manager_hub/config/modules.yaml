@@ -58,7 +58,7 @@ modules:
   usb_camera:
     launch_type: "ros2_run"
     package: "module_manager_hub"
-    node_name: "usb_camera_sender_node"
+    node_name: "camera_streamer_node"
     watch_topic: "/camera/status"
     watch_type: "std_msgs/msg/Bool"
     enabled: true

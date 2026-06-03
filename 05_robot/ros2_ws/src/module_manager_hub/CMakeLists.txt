@@ -67,27 +67,36 @@ ament_target_dependencies(test_arm_controller_node
 rosidl_get_typesupport_target(test_typesupport_target ${PROJECT_NAME} "rosidl_typesupport_cpp")
 target_link_libraries(test_arm_controller_node ${test_typesupport_target})
 
-# ========== USB相机推流节点 ==========
+# ========== 相机推流节点 ==========
 find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs highgui)
 
-add_executable(usb_camera_sender_node
+find_package(sensor_msgs REQUIRED)
+find_package(cv_bridge REQUIRED)
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(FFMPEG REQUIRED libavcodec libavutil libswscale)
+
+add_executable(camera_streamer_node
   src/usb_camera_sender_node.cpp
 )
 
-ament_target_dependencies(usb_camera_sender_node
+ament_target_dependencies(camera_streamer_node
   rclcpp
   std_msgs
+  sensor_msgs
+  cv_bridge
 )
 
-target_link_libraries(usb_camera_sender_node
+target_include_directories(camera_streamer_node PRIVATE ${FFMPEG_INCLUDE_DIRS})
+target_link_libraries(camera_streamer_node
   ${OpenCV_LIBRARIES}
+  ${FFMPEG_LIBRARIES}
 )
 
 # 安装到bin目录
 install(TARGETS
   module_manager_node
   test_arm_controller_node
-  usb_camera_sender_node
+  camera_streamer_node
   DESTINATION lib/${PROJECT_NAME}
 )
 

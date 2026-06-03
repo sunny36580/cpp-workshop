@@ -6,7 +6,15 @@ import serial
 import socket
 import threading
 import io
+import numpy as np
 from enum import Enum
+
+# OpenCV 可选（H.264 解码用，无则回退 JPEG）
+try:
+    import cv2
+    HAS_CV2 = True
+except ImportError:
+    HAS_CV2 = False
 
 # ====================== 基础配置 ======================
 LINEAR_SPEED_MAX = 0.6   # 运控节点线速度上限 (m/s)
@@ -25,6 +33,10 @@ SERIAL_BAUD = 115200
 
 # 二进制协议常量（与 C++ 端保持一致）
 SERIAL_SOF = 0xAA
+
+# ====================== 通信状态 + 模块ID映射 ======================
+# 模块ID与C++端 bit 位一一对应
+MODULE_IDS = ["lower_body", "upper_body", "imu_driver", "remote_interface", "usb_camera"]
 
 # ====================== 指令类型枚举 ======================
 class CmdType(Enum):
@@ -141,7 +153,7 @@ class RobotRemote:
                 bytesize=serial.EIGHTBITS,
                 parity=serial.PARITY_NONE,
                 stopbits=serial.STOPBITS_ONE,
-                timeout=0.01  # 非阻塞读
+                timeout=0.1
             )
             print(f"✅ 串口已打开: {SERIAL_PORT} @ {SERIAL_BAUD} baud")
         except Exception as e:
@@ -149,11 +161,42 @@ class RobotRemote:
             print(f"   请检查 CH340 设备是否已连接，路径是否为 {SERIAL_PORT}")
             self.ser = None
 
+        self.module_statuses = {m: False for m in MODULE_IDS}
+        self.serial_connected = self.ser is not None
+        if self.ser:
+            threading.Thread(target=self.serial_rx_loop, daemon=True).start()
+
         print(f"✅ 运动指令发送频率: {CMD_SEND_RATE}Hz")
 
         # 防抖标记
         self.task_sent = False
         self.stop_sent = False
+
+    # -------------------------- 串口接收（解析C++回发的状态） --------------------------
+    def serial_rx_loop(self):
+        while self.ser and self.ser.is_open:
+            try:
+                if self.ser.read(1) != bytes([SERIAL_SOF]):
+                    continue
+                rest = self.ser.read(2)
+                if len(rest) < 2: continue
+                cmd_type, pay_len = rest[0], rest[1]
+                if pay_len > 64: continue
+                payload = self.ser.read(pay_len + 1)
+                if len(payload) < pay_len + 1: continue
+                data, recv_cs = payload[:pay_len], payload[pay_len]
+                calc_cs = 0
+                for x in rest + data: calc_cs ^= x
+                if calc_cs != recv_cs: continue
+                if cmd_type == 0xF0 and pay_len >= 4:
+                    mask = (data[1] << 8) | data[2]
+                    for i, name in enumerate(MODULE_IDS):
+                        self.module_statuses[name] = bool(mask & (1 << i))
+                    self.serial_connected = True
+            except serial.SerialException:
+                self.serial_connected = False; time.sleep(0.5)
+            except Exception: pass
+        self.serial_connected = False
 
     def update_speed(self):
         """带加减速的平滑速度更新"""
@@ -282,8 +325,17 @@ class RobotRemote:
                     if len(data) != length:
                         break
 
-                    # JPEG解码为pygame Surface，缩放适配右侧区域
-                    raw = pygame.image.load(io.BytesIO(data))
+                    # 解码：H.264 (cv2) 或 JPEG (pygame)
+                    if HAS_CV2:
+                        arr = np.frombuffer(data, np.uint8)
+                        frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+                        if frame is not None:
+                            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                            raw = pygame.image.frombuffer(frame_rgb.tobytes(), frame_rgb.shape[1::-1], "RGB")
+                        else:
+                            raw = pygame.image.load(io.BytesIO(data))
+                    else:
+                        raw = pygame.image.load(io.BytesIO(data))
                     self.camera_frame = pygame.transform.smoothscale(raw, (280, 350))
                 except socket.timeout:
                     continue
@@ -350,17 +402,26 @@ class RobotRemote:
         self.screen.fill(BLACK)
         title = self.font_lg.render("人形机器人遥控系统", True, WHITE)
         self.screen.blit(title, (self.win_w//2 - title.get_width()//2, 20))
-        state = self.font_md.render("串口遥控模式", True, YELLOW)
-        self.screen.blit(state, (40, 80))
+        # 通信状态
+        conn = "🟢 通信在线" if self.serial_connected else "🔴 通信断开"
+        self.screen.blit(self.font_md.render(conn, True, GREEN if self.serial_connected else RED), (40, 80))
+        # 模块状态
+        mod_y = 110
+        online_n = sum(1 for v in self.module_statuses.values() if v)
+        total_n = len(self.module_statuses)
+        self.screen.blit(self.font_sm.render(f"模块: {online_n}/{total_n}", True, WHITE), (40, mod_y))
+        mod_y += 18
+        for name, on in self.module_statuses.items():
+            txt = f"  {'🟢' if on else '🔴'} {name}"
+            self.screen.blit(self.font_sm.render(txt, True, GRAY), (40, mod_y))
+            mod_y += 18
+        if mod_y < 200: mod_y = 200
         speed_cfg = self.font_md.render(
-            f"线速度上限: {self.linear_cfg:.1f} m/s  角速度上限: {self.angular_cfg:.1f} rad/s",
-            True, WHITE
-        )
-        self.screen.blit(speed_cfg, (40, 110))
-        self.draw_speed_bar(40, 160, 300, 20, self.linear_vel, LINEAR_SPEED_MAX, "线速度")
-        self.draw_speed_bar(40, 220, 300, 20, self.angular_vel, ANGULAR_SPEED_MAX, "角速度")
-        tip = self.font_md.render(f"当前操作: {self.last_tip}", True, WHITE)
-        self.screen.blit(tip, (40, 270))
+            f"线速度上限: {self.linear_cfg:.1f} m/s  角速度上限: {self.angular_cfg:.1f} rad/s", True, WHITE)
+        self.screen.blit(speed_cfg, (40, mod_y))
+        self.draw_speed_bar(40, mod_y + 30, 300, 20, self.linear_vel, LINEAR_SPEED_MAX, "线速度")
+        self.draw_speed_bar(40, mod_y + 80, 300, 20, self.angular_vel, ANGULAR_SPEED_MAX, "角速度")
+        self.screen.blit(self.font_md.render(f"当前操作: {self.last_tip}", True, WHITE), (40, mod_y + 130))
         self.draw_key("W", self.k_cx, self.k_cy - self.k_size - self.k_gap, self.key_w)
         self.draw_key("A", self.k_cx - self.k_size - self.k_gap, self.k_cy, self.key_a)
         self.draw_key("S", self.k_cx, self.k_cy, self.key_s)

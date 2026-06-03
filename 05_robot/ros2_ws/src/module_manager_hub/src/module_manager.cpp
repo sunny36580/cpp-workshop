@@ -523,6 +523,22 @@ void ModuleManager::monitorTimerCallback()
     }
   }
   publishModuleStatus();
+  sendSerialStatus();
+}
+
+void ModuleManager::sendSerialStatus()
+{
+  static const char* mod_ids[] = {
+    "lower_body", "upper_body", "imu_driver",
+    "remote_interface", "usb_camera", nullptr
+  };
+  uint16_t mask = 0;
+  for (int i = 0; mod_ids[i] != nullptr; i++) {
+    if (modules_.count(mod_ids[i]) && modules_[mod_ids[i]].online)
+      mask |= (1 << i);
+  }
+  uint8_t payload[4] = {0x01, (uint8_t)(mask >> 8), (uint8_t)(mask & 0xFF), 0x00};
+  sendSerialResponse(0xF0, payload, 4);
 }
 
 void ModuleManager::publishModuleStatus()

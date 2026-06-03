@@ -80,6 +80,7 @@ private:
   void doSerialRead();
   void parseSerialPacket(const uint8_t *payload, size_t pay_len, uint8_t cmd_type);
   void sendSerialResponse(uint8_t cmd_type, const uint8_t *payload, size_t payload_len);
+  void sendSerialStatus();  // 定期向遥控端回发模块状态
   static uint8_t calcChecksum(const uint8_t *data, size_t len);
 
   boost::asio::io_context io_context_;

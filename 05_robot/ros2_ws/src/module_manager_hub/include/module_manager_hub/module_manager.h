@@ -107,4 +107,23 @@ private:
   // ---- 防误触（按键防抖） ----
   static constexpr double TASK_CMD_DEBOUNCE_SEC = 2.0;  // 数字键命令2秒内只响应第一个
   double last_task_cmd_time_ = 0.0;
+
+  // ========== 速度插值（50Hz 平滑输出 cmd_vel） ==========
+  static constexpr double SPEED_INTERPOLATE_HZ = 50.0;   // 输出频率
+  static constexpr double LINEAR_ACCEL  = 0.2;            // 线加速度 m/s²
+  static constexpr double ANGULAR_ACCEL = 0.3;            // 角加速度 rad/s²
+  static constexpr double LINEAR_MAX    = 0.6;            // 线速度上限 m/s
+  static constexpr double ANGULAR_MAX   = 1.0;            // 角速度上限 rad/s
+
+  void interpolateSpeedCallback();
+
+  rclcpp::TimerBase::SharedPtr speed_timer_;
+
+  // 目标速度（每次收到串口控制指令更新）
+  float target_linear_  = 0.0f;
+  float target_angular_ = 0.0f;
+
+  // 当前实际输出速度（插值逐步逼近 target）
+  float current_linear_  = 0.0f;
+  float current_angular_ = 0.0f;
 };

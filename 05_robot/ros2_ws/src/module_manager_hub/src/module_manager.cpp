@@ -58,6 +58,11 @@ ModuleManager::ModuleManager(const std::string &name)
   hw_switch_pub_  = this->create_publisher<std_msgs::msg::Bool>("/hwswitch", 10);
   action_cmd_pub_ = this->create_publisher<std_msgs::msg::String>("/action_cmd", 10);
 
+  // 50Hz 速度插值定时器（平滑输出 cmd_vel）
+  speed_timer_ = this->create_wall_timer(
+    std::chrono::duration<double>(1.0 / SPEED_INTERPOLATE_HZ),
+    std::bind(&ModuleManager::interpolateSpeedCallback, this));
+
   initSerial();
   io_thread_ = std::thread([this]() { io_context_.run(); });
 
@@ -269,19 +274,21 @@ uint8_t ModuleManager::calcChecksum(const uint8_t *data, size_t len)
 
 void ModuleManager::sendSerialResponse(uint8_t cmd_type, const uint8_t *payload, size_t payload_len)
 {
-  std::vector<uint8_t> frame;
-  frame.push_back(SERIAL_SOF);
-  frame.push_back(cmd_type | 0x80);
-  frame.push_back(static_cast<uint8_t>(payload_len));
-  frame.insert(frame.end(), payload, payload + payload_len);
-  frame.push_back(calcChecksum(frame.data() + 1, frame.size() - 1));
+  // 通用异步写（目前仅保留接口，心跳已走独立的同步写路径）
+  auto frame = std::make_shared<std::vector<uint8_t>>();
+  frame->push_back(SERIAL_SOF);
+  frame->push_back(cmd_type | 0x80);
+  frame->push_back(static_cast<uint8_t>(payload_len));
+  frame->insert(frame->end(), payload, payload + payload_len);
+  frame->push_back(calcChecksum(frame->data() + 1, frame->size() - 1));
 
-  boost::system::error_code ec;
-  boost::asio::write(serial_port_, boost::asio::buffer(frame), ec);
-  if (ec) {
-    RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
-      "串口写失败: %s", ec.message().c_str());
-  }
+  boost::asio::async_write(serial_port_, boost::asio::buffer(*frame),
+    [this, frame](boost::system::error_code ec, std::size_t /*bytes*/) {
+      if (ec) {
+        RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
+          "串口异步写失败: %s", ec.message().c_str());
+      }
+    });
 }
 
 void ModuleManager::parseSerialPacket(const uint8_t *payload, size_t pay_len, uint8_t cmd_type)
@@ -294,21 +301,22 @@ void ModuleManager::parseSerialPacket(const uint8_t *payload, size_t pay_len, ui
 
   switch (cmd_type)
   {
-    // ---- cmd_type=1: 运动指令 ----
+    // ---- cmd_type=1: 运动指令（仅更新目标速度，由 speed_timer_ 以 50Hz 插值输出） ----
     case 1: {
       if (pay_len < 8) { RCLCPP_WARN(this->get_logger(), "运动指令长度不足"); break; }
       float linear  = 0, angular = 0;
       memcpy(&linear,  payload,      sizeof(float));
       memcpy(&angular, payload + 4,  sizeof(float));
 
-      geometry_msgs::msg::Twist t;
-      t.linear.x = linear; t.linear.y = 0; t.angular.z = angular;
-      cmd_vel_pub_->publish(t);
-      if ((std::abs(linear) > 0.001f || std::abs(angular) > 0.001f) && current_mode_ == "STAND") {
+      // 限幅
+      target_linear_  = std::clamp(linear,  -static_cast<float>(LINEAR_MAX),   static_cast<float>(LINEAR_MAX));
+      target_angular_ = std::clamp(angular, -static_cast<float>(ANGULAR_MAX), static_cast<float>(ANGULAR_MAX));
+
+      if ((std::abs(target_linear_) > 0.001f || std::abs(target_angular_) > 0.001f) && current_mode_ == "STAND") {
         current_mode_ = "WALK_FULL";
         publish_mode();
       }
-      RCLCPP_INFO(this->get_logger(), "运动指令: linear=%.3f, angular=%.3f", linear, angular);
+      RCLCPP_INFO(this->get_logger(), "运动指令: linear=%.3f, angular=%.3f", target_linear_, target_angular_);
       break;
     }
 
@@ -346,6 +354,8 @@ void ModuleManager::parseSerialPacket(const uint8_t *payload, size_t pay_len, ui
     // ---- cmd_type=3: 急停 ----
     case 3: {
       RCLCPP_WARN(this->get_logger(), ">>> 急停 <<<");
+      target_linear_ = 0.0f;  target_angular_ = 0.0f;
+      current_linear_ = 0.0f; current_angular_ = 0.0f;
       cmd_vel_pub_->publish(geometry_msgs::msg::Twist());
       current_mode_ = "EMERGENCY"; publish_mode();
       hw_switch_state_ = false;
@@ -494,6 +504,45 @@ void ModuleManager::execScriptTask(const std::string &name)
 // =====================================================================
 // 监控
 // =====================================================================
+// 速度插值：50Hz 以恒定加减速逼近目标速度
+// =====================================================================
+void ModuleManager::interpolateSpeedCallback()
+{
+  const double dt = 1.0 / SPEED_INTERPOLATE_HZ;  // 0.02s
+
+  // ---- 线速度插值 ----
+  if (std::abs(target_linear_ - current_linear_) < 0.001f) {
+    current_linear_ = target_linear_;
+  } else {
+    float step = LINEAR_ACCEL * dt;
+    if (target_linear_ > current_linear_) {
+      current_linear_ = std::min(current_linear_ + step, target_linear_);
+    } else {
+      current_linear_ = std::max(current_linear_ - step, target_linear_);
+    }
+  }
+
+  // ---- 角速度插值 ----
+  if (std::abs(target_angular_ - current_angular_) < 0.001f) {
+    current_angular_ = target_angular_;
+  } else {
+    float step = ANGULAR_ACCEL * dt;
+    if (target_angular_ > current_angular_) {
+      current_angular_ = std::min(current_angular_ + step, target_angular_);
+    } else {
+      current_angular_ = std::max(current_angular_ - step, target_angular_);
+    }
+  }
+
+  // ---- 发布 cmd_vel ----
+  geometry_msgs::msg::Twist t;
+  t.linear.x = current_linear_;
+  t.linear.y = 0.0;
+  t.angular.z = current_angular_;
+  cmd_vel_pub_->publish(t);
+}
+
+// =====================================================================
 void ModuleManager::monitorTimerCallback()
 {
   double now = this->now().seconds();
@@ -538,20 +587,34 @@ void ModuleManager::monitorTimerCallback()
 
 void ModuleManager::sendSerialStatus()
 {
-  // 投递到 io_context 线程执行，避免和 async_read 冲突
-  boost::asio::post(io_context_, [this]() {
-    static const char* mod_ids[] = {
-      "lower_body", "upper_body", "imu_driver",
-      "remote_interface", "usb_camera", nullptr
-    };
-    uint16_t mask = 0;
-    for (int i = 0; mod_ids[i] != nullptr; i++) {
-      if (modules_.count(mod_ids[i]) && modules_[mod_ids[i]].online)
-        mask |= (1 << i);
-    }
-    uint8_t payload[4] = {0x01, (uint8_t)(mask >> 8), (uint8_t)(mask & 0xFF), 0x00};
-    sendSerialResponse(0xF0, payload, 4);
-  });
+  // 直接在 ROS 线程同步写心跳，不再经过 io_context
+  // 6 字节的心跳帧在 115200 波特率下耗时 < 1ms，不会阻塞 ROS 线程
+  static const char* mod_ids[] = {
+    "lower_body", "upper_body", "imu_driver",
+    "remote_interface", "usb_camera", nullptr
+  };
+  uint16_t mask = 0;
+  for (int i = 0; mod_ids[i] != nullptr; i++) {
+    if (modules_.count(mod_ids[i]) && modules_[mod_ids[i]].online)
+      mask |= (1 << i);
+  }
+
+  uint8_t payload[4] = {0x01, (uint8_t)(mask >> 8), (uint8_t)(mask & 0xFF), 0x00};
+
+  // 拼帧并同步发送
+  std::vector<uint8_t> frame;
+  frame.push_back(SERIAL_SOF);
+  frame.push_back(0xF0 | 0x80);
+  frame.push_back(4);
+  frame.insert(frame.end(), payload, payload + 4);
+  frame.push_back(calcChecksum(frame.data() + 1, frame.size() - 1));
+
+  boost::system::error_code ec;
+  boost::asio::write(serial_port_, boost::asio::buffer(frame), ec);
+  if (ec) {
+    RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
+      "串口心跳发送失败: %s", ec.message().c_str());
+  }
 }
 
 void ModuleManager::publishModuleStatus()

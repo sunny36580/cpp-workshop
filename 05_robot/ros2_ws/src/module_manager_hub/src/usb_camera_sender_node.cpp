@@ -4,6 +4,7 @@
 #include <cv_bridge/cv_bridge.h>
 #include <opencv2/opencv.hpp>
 #include <sys/socket.h>
+#include <netinet/in.h>
 #include <arpa/inet.h>
 #include <unistd.h>
 #include <vector>
@@ -27,14 +28,10 @@ public:
     : Node(node_name)
     {
         this->declare_parameter<std::string>("image_topic", "/camera/image_raw");
-        this->declare_parameter<int>("jpeg_quality", 75);
         this->declare_parameter<int>("port", 8888);
-        this->declare_parameter<bool>("use_h264", true);
 
-        image_topic_   = this->get_parameter("image_topic").as_string();
-        jpeg_quality_  = this->get_parameter("jpeg_quality").as_int();
-        port_          = this->get_parameter("port").as_int();
-        use_h264_      = this->get_parameter("use_h264").as_bool();
+        image_topic_ = this->get_parameter("image_topic").as_string();
+        port_        = this->get_parameter("port").as_int();
 
         heartbeat_pub_ = this->create_publisher<std_msgs::msg::Bool>("/camera/status", 10);
         heartbeat_timer_ = this->create_wall_timer(
@@ -44,21 +41,21 @@ public:
             image_topic_, rclcpp::SensorDataQoS(),
             std::bind(&CameraStreamer::imageCallback, this, std::placeholders::_1));
 
-        if (!initTcpServer()) {
-            RCLCPP_ERROR(this->get_logger(), "❌ TCP服务器初始化失败");
-            rclcpp::shutdown();
-            return;
-        }
+        // 用默认尺寸初始化编码器
+        enc_width_ = 640;
+        enc_height_ = 480;
+        initEncoder();
+        initTcpServer();
 
-        RCLCPP_INFO(this->get_logger(), "✅ 图像推流节点启动  topic=%s  codec=%s  port=%d",
-                    image_topic_.c_str(), use_h264_ ? "H.264" : "MJPEG", port_);
         stream_thread_ = std::thread(&CameraStreamer::streamLoop, this);
+
+        RCLCPP_INFO(this->get_logger(), "✅ 推流节点启动  topic=%s  port=%d  H.264",
+                    image_topic_.c_str(), port_);
     }
 
     ~CameraStreamer() override
     {
         running_ = false;
-        // 先关 server socket 让 accept() 返回，再 join 线程
         if (server_fd_ > 0) { close(server_fd_); server_fd_ = -1; }
         if (stream_thread_.joinable()) stream_thread_.join();
         if (client_fd_ > 0) { close(client_fd_); client_fd_ = -1; }
@@ -72,11 +69,6 @@ private:
             auto cv_ptr = cv_bridge::toCvCopy(msg, "bgr8");
             std::lock_guard<std::mutex> lock(frame_mutex_);
             latest_frame_ = cv_ptr->image.clone();
-            if (!encoder_ready_) {
-                enc_width_ = latest_frame_.cols;
-                enc_height_ = latest_frame_.rows;
-                initEncoder();
-            }
         } catch (cv_bridge::Exception &e) {
             RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
                 "cv_bridge failed: %s", e.what());
@@ -85,21 +77,18 @@ private:
 
     void initEncoder()
     {
-        const AVCodec *codec = avcodec_find_encoder(
-            use_h264_ ? AV_CODEC_ID_H264 : AV_CODEC_ID_MJPEG);
-        if (!codec) { RCLCPP_ERROR(this->get_logger(), "找不到编码器"); return; }
+        const AVCodec *codec = avcodec_find_encoder(AV_CODEC_ID_H264);
+        if (!codec) { RCLCPP_ERROR(this->get_logger(), "找不到 H.264 编码器"); return; }
         enc_ctx_ = avcodec_alloc_context3(codec);
         enc_ctx_->width = enc_width_;
         enc_ctx_->height = enc_height_;
         enc_ctx_->time_base = {1, 30};
         enc_ctx_->framerate = {30, 1};
         enc_ctx_->pix_fmt = AV_PIX_FMT_YUV420P;
-        if (use_h264_) {
-            enc_ctx_->gop_size = 30;
-            enc_ctx_->max_b_frames = 0;
-            av_opt_set(enc_ctx_->priv_data, "preset", "ultrafast", 0);
-            av_opt_set(enc_ctx_->priv_data, "tune", "zerolatency", 0);
-        }
+        enc_ctx_->gop_size = 30;
+        enc_ctx_->max_b_frames = 0;
+        av_opt_set(enc_ctx_->priv_data, "preset", "ultrafast", 0);
+        av_opt_set(enc_ctx_->priv_data, "tune", "zerolatency", 0);
         avcodec_open2(enc_ctx_, codec, nullptr);
 
         enc_frame_ = av_frame_alloc();
@@ -109,13 +98,11 @@ private:
         av_frame_get_buffer(enc_frame_, 0);
 
         enc_pkt_ = av_packet_alloc();
-
         sws_ctx_ = sws_getContext(enc_width_, enc_height_, AV_PIX_FMT_BGR24,
                                    enc_width_, enc_height_, AV_PIX_FMT_YUV420P,
                                    SWS_BILINEAR, nullptr, nullptr, nullptr);
         encoder_ready_ = true;
-        RCLCPP_INFO(this->get_logger(), "编码器初始化完成 %dx%d %s",
-                    enc_width_, enc_height_, use_h264_ ? "H.264" : "MJPEG");
+        RCLCPP_INFO(this->get_logger(), "编码器初始化完成 %dx%d H.264", enc_width_, enc_height_);
     }
 
     void cleanupEncoder()
@@ -126,15 +113,15 @@ private:
         if (enc_ctx_) avcodec_free_context(&enc_ctx_);
     }
 
-    bool encodeFrame(const cv::Mat &bgr, std::vector<uint8_t> &out)
+    bool encodeFrame(const cv::Mat &bgr, std::vector<uint8_t> &out, bool force_key)
     {
         if (!encoder_ready_) return false;
 
-        // BGR → YUV420P
-        const int stride = enc_width_ * 3;
-        sws_scale(sws_ctx_, &bgr.data, &stride, 0, enc_height_,
+        const int stride[1] = { static_cast<int>(bgr.step[0]) };
+        sws_scale(sws_ctx_, &bgr.data, stride, 0, enc_height_,
                   enc_frame_->data, enc_frame_->linesize);
 
+        if (force_key) enc_frame_->pict_type = AV_PICTURE_TYPE_I;
         enc_frame_->pts = pts_++;
 
         int ret = avcodec_send_frame(enc_ctx_, enc_frame_);
@@ -156,24 +143,22 @@ private:
         if (server_fd_ == -1) return false;
         int opt = 1;
         setsockopt(server_fd_, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
-#ifdef SO_REUSEPORT
-        setsockopt(server_fd_, SOL_SOCKET, SO_REUSEPORT, &opt, sizeof(opt));
-#endif
+
         sockaddr_in addr{};
         addr.sin_family = AF_INET;
         addr.sin_port = htons(port_);
         addr.sin_addr.s_addr = INADDR_ANY;
 
-        // 重试绑定，应对端口 TIME_WAIT
         for (int retry = 0; retry < 5; retry++) {
             if (bind(server_fd_, (sockaddr*)&addr, sizeof(addr)) == 0) {
                 listen(server_fd_, 1);
+                RCLCPP_INFO(this->get_logger(), "TCP server 监听端口 %d", port_);
                 return true;
             }
             RCLCPP_WARN(this->get_logger(), "端口 %d 绑定失败，重试 %d/5...", port_, retry+1);
             std::this_thread::sleep_for(std::chrono::seconds(1));
         }
-        RCLCPP_ERROR(this->get_logger(), "端口 %d 绑定失败（已重试5次）", port_);
+        RCLCPP_ERROR(this->get_logger(), "端口 %d 绑定失败", port_);
         return false;
     }
 
@@ -187,8 +172,7 @@ private:
     void streamLoop()
     {
         cv::Mat frame;
-        std::vector<uchar> enc_buf;
-        std::vector<int> jpg_params = {cv::IMWRITE_JPEG_QUALITY, jpeg_quality_};
+        std::vector<uint8_t> enc_buf;
 
         while (running_ && rclcpp::ok()) {
             RCLCPP_INFO(this->get_logger(), "等待客户端连接...");
@@ -197,25 +181,29 @@ private:
                 if (running_) std::this_thread::sleep_for(1s);
                 continue;
             }
-            RCLCPP_INFO(this->get_logger(), "客户端已连接，开始推流 (%s)",
-                        use_h264_ ? "H.264" : "MJPEG");
+            RCLCPP_INFO(this->get_logger(), "客户端已连接");
+
+            bool first_frame = true;
 
             while (running_ && rclcpp::ok()) {
                 {
                     std::lock_guard<std::mutex> lock(frame_mutex_);
                     if (latest_frame_.empty()) {
-                        std::this_thread::sleep_for(10ms);
-                        continue;
+                        frame = cv::Mat(480, 640, CV_8UC3, cv::Scalar(255, 0, 0));
+                    } else {
+                        frame = latest_frame_.clone();
                     }
-                    frame = latest_frame_.clone();
                 }
 
                 enc_buf.clear();
-                if (use_h264_ && encoder_ready_) {
-                    if (!encodeFrame(frame, enc_buf)) continue;
+                if (encoder_ready_) {
+                    if (!encodeFrame(frame, enc_buf, first_frame)) {
+                        std::this_thread::sleep_for(10ms);
+                        continue;
+                    }
+                    first_frame = false;
                 } else {
-                    // MJPEG fallback
-                    cv::imencode(".jpg", frame, enc_buf, jpg_params);
+                    continue;
                 }
 
                 int size = (int)enc_buf.size();
@@ -230,19 +218,15 @@ private:
         }
     }
 
-    // parameters
     std::string image_topic_;
-    int jpeg_quality_, port_;
-    bool use_h264_;
+    int port_;
     int server_fd_ = -1, client_fd_ = -1;
     std::thread stream_thread_;
     std::atomic<bool> running_ = true;
 
-    // frame buffer
     cv::Mat latest_frame_;
     std::mutex frame_mutex_;
 
-    // H.264 encoder
     bool encoder_ready_ = false;
     int enc_width_ = 0, enc_height_ = 0;
     int64_t pts_ = 0;

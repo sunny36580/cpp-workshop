@@ -5,16 +5,10 @@ import struct
 import serial
 import socket
 import threading
-import io
+import cv2
 import numpy as np
+import io
 from enum import Enum
-
-# OpenCV 可选（H.264 解码用，无则回退 JPEG）
-try:
-    import cv2
-    HAS_CV2 = True
-except ImportError:
-    HAS_CV2 = False
 
 # ====================== 基础配置 ======================
 LINEAR_SPEED_MAX = 0.6   # 运控节点线速度上限 (m/s)
@@ -23,7 +17,7 @@ CMD_SEND_RATE = 20        # 运动指令发送频率(Hz)
 
 # 相机推流配置
 CAMERA_IP = "192.168.9.253"   # 机端IP地址
-CAMERA_PORT = 8888             # 机端相机推流端口
+CAMERA_PORT = 8888             # TCP 推流端口
 
 # 串口配置（与 C++ 模块管理器一致）
 # Windows 下 CH340 通常是 COM3，改为: SERIAL_PORT = "COM3"
@@ -132,10 +126,10 @@ class RobotRemote:
         self.task_retry_num = 0          # 当前重发的任务编号
         self.last_task_time = 0          # 上次任务发送时间
 
-        # 相机画面（按C键切换）
-        self.camera_active = False
+        # 相机画面（C键播放/停止，画面常驻）
+        self.camera_playing = False     # 是否正在播放
+        self.camera_active = False      # 线程是否运行中
         self.camera_frame = None
-        self.camera_sock = None
         self.camera_thread = None
         self.camera_running = False
 
@@ -303,78 +297,81 @@ class RobotRemote:
         self.send_frame(frame)
 
     # -------------------------- 相机画面 --------------------------
-    def toggle_camera(self):
-        """切换相机画面"""
-        if self.camera_active:
+    def toggle_camera_play(self):
+        """C键切换播放/停止（画面常驻，C键只控制数据流）"""
+        if self.camera_playing:
             self.stop_camera()
         else:
             self.start_camera()
 
     def start_camera(self):
         """启动相机接收线程"""
+        self.camera_playing = True
         self.camera_active = True
         self.camera_running = True
-        self.last_tip = "相机连接中..."
+        self.last_tip = "相机播放中..."
         self.camera_thread = threading.Thread(target=self.camera_loop, daemon=True)
         self.camera_thread.start()
 
     def stop_camera(self):
-        """停止相机接收"""
+        """停止相机接收（保留最后一帧画面）"""
         self.camera_running = False
         self.camera_active = False
-        if self.camera_sock:
-            try: self.camera_sock.close()
-            except: pass
-            self.camera_sock = None
-        self.camera_frame = None
-        self.last_tip = "相机已关闭"
+        self.camera_playing = False
+        self.last_tip = "相机已暂停"
 
     def camera_loop(self):
-        """相机接收线程：TCP连接 → 收帧 → 解码 → 显示"""
+        """相机接收线程：TCP → H.264 → OpenCV 解码"""
+        sock = None
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.settimeout(5.0)
             sock.connect((CAMERA_IP, CAMERA_PORT))
-            self.camera_sock = sock
             self.last_tip = "相机已连接"
-            print("✅ 相机已连接")
+            print("✅ TCP 相机已连接")
+
+            # 创建 H.264 解码器
+            h264_decoder = cv2.VideoWriter_fourcc(*'H264')
+            # OpenCV 的 VideoCapture 不能直接解 raw H.264 ES
+            # 用 Python 的 av 库来解码
+            try:
+                import av
+                codec = av.CodecContext.create('h264', 'r')
+            except ImportError:
+                print("⚠ 需要安装 av 库: pip install av")
+                raise
 
             while self.camera_running:
-                try:
-                    # 读4字节数据长度
-                    len_data = sock.recv(4)
-                    if not len_data: break
-                    length = int.from_bytes(len_data, 'big')
-                    if length > 500000:  # 防异常大包
-                        continue
-
-                    # 读完整图像数据
-                    data = b''
-                    while len(data) < length:
-                        packet = sock.recv(length - len(data))
-                        if not packet: break
-                        data += packet
-
-                    if len(data) != length:
-                        break
-
-                    # 解码：H.264 (cv2) 或 JPEG (pygame)
-                    if HAS_CV2:
-                        arr = np.frombuffer(data, np.uint8)
-                        frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-                        if frame is not None:
-                            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                            raw = pygame.image.frombuffer(frame_rgb.tobytes(), frame_rgb.shape[1::-1], "RGB")
-                        else:
-                            raw = pygame.image.load(io.BytesIO(data))
-                    else:
-                        raw = pygame.image.load(io.BytesIO(data))
-                    self.camera_frame = pygame.transform.smoothscale(raw, (280, 350))
-                except socket.timeout:
-                    continue
-                except Exception as e:
-                    print(f"❌ 相机帧解码失败: {e}")
+                # 读4字节数据长度
+                len_data = sock.recv(4)
+                if not len_data:
                     break
+                length = int.from_bytes(len_data, 'big')
+                if length > 500000:
+                    continue
+
+                # 读完整 H.264 数据
+                data = b''
+                while len(data) < length:
+                    packet = sock.recv(length - len(data))
+                    if not packet:
+                        break
+                    data += packet
+
+                if len(data) != length:
+                    break
+
+                # 用 PyAV 解码 H.264 ES
+                try:
+                    frames = codec.decode(av.Packet(data))
+                    for frame in frames:
+                        img = frame.to_ndarray(format='bgr24')
+                        frame_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                        raw = pygame.image.frombuffer(frame_rgb.tobytes(),
+                                                       frame_rgb.shape[1::-1], "RGB")
+                        self.camera_frame = pygame.transform.smoothscale(raw, (280, 350))
+                except Exception:
+                    pass  # EAGAIN: need more data
 
         except socket.timeout:
             self.last_tip = "相机连接超时"
@@ -383,15 +380,17 @@ class RobotRemote:
             self.last_tip = "相机服务未启动"
             print("❌ 相机服务未启动")
         except Exception as e:
-            self.last_tip = f"相机错误: {e}"
-            print(f"❌ 相机连接失败: {e}")
+            self.last_tip = f"相机错误: {str(e)[:30]}"
+            print(f"❌ 相机错误: {e}")
         finally:
+            if sock:
+                try:
+                    sock.close()
+                except:
+                    pass
             self.camera_running = False
             self.camera_active = False
-            if self.camera_sock:
-                try: self.camera_sock.close()
-                except: pass
-                self.camera_sock = None
+            self.camera_playing = False
             print("📷 相机已断开")
 
     def send_stop_cmd(self):
@@ -463,43 +462,43 @@ class RobotRemote:
         self.draw_key("S", self.k_cx, self.k_cy, self.key_s)
         self.draw_key("D", self.k_cx + self.k_size + self.k_gap, self.k_cy, self.key_d)
 
-        # ========== 右侧区域 ==========
-        if self.camera_active and self.camera_frame:
-            # 显示相机画面
-            cam_x, cam_y = 510, 70
-            # 画边框
-            pygame.draw.rect(self.screen, BLUE, (cam_x-5, cam_y-5, 290, 360), 2, border_radius=4)
+        # ========== 右侧区域（视频画面常驻）==========
+        cam_x, cam_y = 510, 70
+        # 画背景区域
+        pygame.draw.rect(self.screen, DARK_GRAY, (cam_x-5, cam_y-5, 290, 360), border_radius=4)
+        if self.camera_frame is not None:
             self.screen.blit(self.camera_frame, (cam_x, cam_y))
-            # 状态指示
-            cam_label = self.font_sm.render("📷 相机画面 [C键切换]", True, GREEN)
-            self.screen.blit(cam_label, (cam_x, cam_y + 355))
+        if not self.camera_playing:
+            # 暂停覆盖层
+            overlay = pygame.Surface((280, 350), pygame.SRCALPHA)
+            overlay.fill((0, 0, 0, 160))
+            self.screen.blit(overlay, (cam_x, cam_y))
+            pause_text = self.font_md.render("⏸ 已暂停 [C键播放]", True, WHITE)
+            self.screen.blit(pause_text, (cam_x + 140 - pause_text.get_width()//2,
+                                          cam_y + 175 - pause_text.get_height()//2))
+        # 状态指示
+        if self.camera_playing:
+            cam_label = self.font_sm.render("▶ 播放中 [C键暂停]", True, GREEN)
         else:
-            # 预设任务列表
-            task_title = self.font_md.render("预设任务列表", True, WHITE)
-            self.screen.blit(task_title, (500, 80))
-            y = 120
-            for task_id, task_name in TASK_LIST.items():
-                task_text = f"{task_id}: {task_name}"
-                t = self.font_sm.render(task_text, True, GRAY)
-                self.screen.blit(t, (500, y))
-                y += 25
+            cam_label = self.font_sm.render("⏸ 已暂停 [C键播放]", True, GRAY)
+        self.screen.blit(cam_label, (cam_x, cam_y + 355))
 
-            # 操作说明
-            help_title = self.font_md.render("操作说明", True, WHITE)
-            self.screen.blit(help_title, (500, 400))
-            help_texts = [
-                "W / S ：前进 / 后退",
-                "A / D ：左转 / 右转",
-                "数字 1~10 ：执行预设任务",
-                "空格 ：紧急停止",
-                "C   ：切换相机画面",
-                "ESC ：退出程序"
-            ]
-            y = 430
-            for text in help_texts:
-                t = self.font_sm.render(text, True, GRAY)
-                self.screen.blit(t, (500, y))
-                y += 22
+        # 操作说明
+        help_title = self.font_md.render("操作说明", True, WHITE)
+        self.screen.blit(help_title, (500, 440))
+        help_texts = [
+            "W / S ：前进 / 后退",
+            "A / D ：左转 / 右转",
+            "数字 1~10 ：执行预设任务",
+            "空格 ：紧急停止",
+            "C   ：相机播放 / 暂停",
+            "ESC ：退出程序"
+        ]
+        y = 470
+        for text in help_texts:
+            t = self.font_sm.render(text, True, GRAY)
+            self.screen.blit(t, (500, y))
+            y += 22
 
         pygame.display.flip()
 
@@ -581,9 +580,9 @@ class RobotRemote:
                             self.send_stop_cmd()
                             self.stop_sent = True
 
-                    # C 键切换相机画面
+                    # C 键播放/暂停相机
                     elif event.key == pygame.K_c:
-                        self.toggle_camera()
+                        self.toggle_camera_play()
 
                     # ESC 退出
                     elif event.key == pygame.K_ESCAPE:
@@ -630,7 +629,10 @@ class RobotRemote:
             clock.tick(60)
 
         # 退出前关闭相机和串口
-        self.stop_camera()
+        self.camera_running = False
+        self.camera_playing = False
+        self.camera_active = False
+        self.camera_frame = None
         self.send_move_cmd()
         if self.ser:
             self.ser.close()

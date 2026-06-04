@@ -113,8 +113,8 @@ def build_frame(cmd_type: int, payload: bytes = b"") -> bytes:
 class RobotRemote:
     def __init__(self):
         pygame.init()
-        self.win_w = 800
-        self.win_h = 500
+        self.win_w = 1200
+        self.win_h = 720
         self.screen = pygame.display.set_mode((self.win_w, self.win_h))
         pygame.display.set_caption("人形机器人遥控系统")
 
@@ -162,6 +162,7 @@ class RobotRemote:
         self.camera_frame = None
         self.camera_thread = None
         self.camera_running = False
+        self.camera_frame_lock = threading.Lock()  # 保护 camera_frame
 
         # 虚拟按键位置尺寸
         self.k_size = 60
@@ -423,10 +424,10 @@ class RobotRemote:
                     frames = codec.decode(av.Packet(data))
                     for frame in frames:
                         img = frame.to_ndarray(format='bgr24')
-                        frame_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-                        raw = pygame.image.frombuffer(frame_rgb.tobytes(),
-                                                       frame_rgb.shape[1::-1], "RGB")
-                        self.camera_frame = pygame.transform.smoothscale(raw, (280, 350))
+                        # 直接转 pygame surface，640x480 无需额外缩放
+                        raw = pygame.image.frombuffer(img.tobytes(), (img.shape[1], img.shape[0]), "BGR")
+                        with self.camera_frame_lock:
+                            self.camera_frame = raw
                 except Exception:
                     pass  # EAGAIN: need more data
 
@@ -519,30 +520,31 @@ class RobotRemote:
         self.draw_key("S", self.k_cx, self.k_cy, self.key_s)
         self.draw_key("D", self.k_cx + self.k_size + self.k_gap, self.k_cy, self.key_d)
 
-        # ========== 右侧区域（视频画面常驻）==========
-        cam_x, cam_y = 510, 70
+        # ========== 右侧区域（视频画面 640x480）==========
+        cam_w, cam_h = 640, 480
+        cam_x, cam_y = 520, 60
         # 画背景区域
-        pygame.draw.rect(self.screen, DARK_GRAY, (cam_x-5, cam_y-5, 290, 360), border_radius=4)
+        pygame.draw.rect(self.screen, DARK_GRAY, (cam_x-5, cam_y-5, cam_w+10, cam_h+45), border_radius=4)
         if self.camera_frame is not None:
             self.screen.blit(self.camera_frame, (cam_x, cam_y))
         if not self.camera_playing:
             # 暂停覆盖层
-            overlay = pygame.Surface((280, 350), pygame.SRCALPHA)
+            overlay = pygame.Surface((cam_w, cam_h), pygame.SRCALPHA)
             overlay.fill((0, 0, 0, 160))
             self.screen.blit(overlay, (cam_x, cam_y))
             pause_text = self.font_md.render("⏸ 已暂停 [C键播放]", True, WHITE)
-            self.screen.blit(pause_text, (cam_x + 140 - pause_text.get_width()//2,
-                                          cam_y + 175 - pause_text.get_height()//2))
+            self.screen.blit(pause_text, (cam_x + cam_w//2 - pause_text.get_width()//2,
+                                          cam_y + cam_h//2 - pause_text.get_height()//2))
         # 状态指示
         if self.camera_playing:
             cam_label = self.font_sm.render("▶ 播放中 [C键暂停]", True, GREEN)
         else:
             cam_label = self.font_sm.render("⏸ 已暂停 [C键播放]", True, GRAY)
-        self.screen.blit(cam_label, (cam_x, cam_y + 355))
+        self.screen.blit(cam_label, (cam_x, cam_y + cam_h + 5))
 
         # 操作说明
         help_title = self.font_md.render("操作说明", True, WHITE)
-        self.screen.blit(help_title, (500, 440))
+        self.screen.blit(help_title, (cam_x, cam_y + cam_h + 25))
         help_texts = [
             "W / S ：前进 / 后退",
             "A / D ：左转 / 右转",
@@ -551,11 +553,11 @@ class RobotRemote:
             "C   ：相机播放 / 暂停",
             "ESC ：退出程序"
         ]
-        y = 470
+        y = cam_y + cam_h + 50
         for text in help_texts:
             t = self.font_sm.render(text, True, GRAY)
-            self.screen.blit(t, (500, y))
-            y += 22
+            self.screen.blit(t, (cam_x, y))
+            y += 20
 
         pygame.display.flip()
 

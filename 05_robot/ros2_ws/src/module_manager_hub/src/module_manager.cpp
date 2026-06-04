@@ -10,6 +10,8 @@
 #include <sys/wait.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <dirent.h>
+#include <cstdio>
 
 using namespace std::chrono_literals;
 
@@ -440,9 +442,9 @@ int ModuleManager::execCommand(const std::string &cmd, const std::string &work_d
       full_cmd = cmd;
     }
 
-    // 子进程 stdout/stderr 透传给父进程以便排查
+    // 子进程创建独立进程组以便统一杀掉整个进程树
     setpgid(0, 0);
-    setsid();
+    // 注意: 不调 setsid()，否则脱离父进程会话后 kill(-pgid) 无法送达
     execl("/bin/sh", "sh", "-c", full_cmd.c_str(), (char*)nullptr);
     _exit(127);
   }
@@ -451,16 +453,56 @@ int ModuleManager::execCommand(const std::string &cmd, const std::string &work_d
   return pid;
 }
 
+// 递归杀掉指定 PID 及其所有子进程（遍历 /proc）
+static void killProcessTree(int pid, int sig)
+{
+  if (pid <= 0) return;
+  // 先收集子进程列表
+  std::vector<int> children;
+  DIR *proc = opendir("/proc");
+  if (proc) {
+    struct dirent *entry;
+    while ((entry = readdir(proc)) != nullptr) {
+      if (entry->d_type != DT_DIR) continue;
+      char status_path[64];
+      snprintf(status_path, sizeof(status_path), "/proc/%s/status", entry->d_name);
+      FILE *f = fopen(status_path, "r");
+      if (!f) continue;
+      char line[256];
+      int ppid = -1;
+      while (fgets(line, sizeof(line), f)) {
+        if (sscanf(line, "PPid:\t%d", &ppid) == 1) break;
+      }
+      fclose(f);
+      if (ppid == pid) {
+        int child_pid = atoi(entry->d_name);
+        children.push_back(child_pid);
+      }
+    }
+    closedir(proc);
+  }
+  // 先递归杀子进程，再杀自己
+  for (int child : children) {
+    killProcessTree(child, sig);
+  }
+  kill(pid, sig);
+}
+
 bool ModuleManager::killProcess(int pid)
 {
   if (pid <= 0) return false;
-  kill(-pid, SIGTERM);
+
+  // 递归杀掉整个进程树（sh -c → python3 → camera_streamer_node）
+  killProcessTree(pid, SIGTERM);
+
   for (int i = 0; i < 10; i++) {
-    if (waitpid(-pid, nullptr, WNOHANG) > 0) return true;
+    if (waitpid(pid, nullptr, WNOHANG) > 0) return true;
     std::this_thread::sleep_for(500ms);
   }
-  kill(-pid, SIGKILL);
-  waitpid(-pid, nullptr, 0);
+
+  // 5 秒后强制 SIGKILL
+  killProcessTree(pid, SIGKILL);
+  waitpid(pid, nullptr, 0);
   return true;
 }
 

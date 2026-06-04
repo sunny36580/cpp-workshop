@@ -6,11 +6,13 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <netinet/tcp.h>
 #include <unistd.h>
 #include <vector>
 #include <thread>
 #include <atomic>
 #include <mutex>
+#include <sys/poll.h>
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -27,7 +29,7 @@ public:
     explicit CameraStreamer(const std::string& node_name)
     : Node(node_name)
     {
-        this->declare_parameter<std::string>("image_topic", "/camera/image_raw");
+        this->declare_parameter<std::string>("image_topic", "/camera1/image_raw");
         this->declare_parameter<int>("port", 8888);
 
         image_topic_ = this->get_parameter("image_topic").as_string();
@@ -175,16 +177,32 @@ private:
         cv::Mat frame;
         std::vector<uint8_t> enc_buf;
 
+        // 设置 accept 超时，让 Ctrl+C 能快速退出
+        int timeout_ms = 1000; // 1秒超时
+        setsockopt(server_fd_, SOL_SOCKET, SO_RCVTIMEO, &timeout_ms, sizeof(timeout_ms));
+
         while (running_ && rclcpp::ok()) {
             RCLCPP_INFO(this->get_logger(), "等待客户端连接...");
             client_fd_ = accept(server_fd_, nullptr, nullptr);
             if (client_fd_ == -1) {
-                if (running_) std::this_thread::sleep_for(1s);
+                if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                    // accept 超时，继续检查 running_
+                    continue;
+                }
+                if (running_) std::this_thread::sleep_for(500ms);
                 continue;
             }
             RCLCPP_INFO(this->get_logger(), "客户端已连接");
 
             bool first_frame = true;
+            int frame_count = 0;
+
+            // 设置 recv/send 超时
+            struct timeval tv;
+            tv.tv_sec = 0;
+            tv.tv_usec = 500000; // 500ms
+            setsockopt(client_fd_, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+            setsockopt(client_fd_, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
 
             while (running_ && rclcpp::ok()) {
                 {
@@ -198,7 +216,9 @@ private:
 
                 enc_buf.clear();
                 if (encoder_ready_) {
-                    if (!encodeFrame(frame, enc_buf, first_frame)) {
+                    // 每 60 帧（约 2 秒）强制插入关键帧，防止解码器累积错误
+                    bool force_key = first_frame || (++frame_count % 60 == 0);
+                    if (!encodeFrame(frame, enc_buf, force_key)) {
                         std::this_thread::sleep_for(10ms);
                         continue;
                     }
@@ -207,9 +227,10 @@ private:
                     continue;
                 }
 
-                int size = (int)enc_buf.size();
-                if (send(client_fd_, &size, 4, 0) <= 0 ||
-                    send(client_fd_, enc_buf.data(), size, 0) <= 0) {
+                // 用网络序（大端）发送长度，与 Python 端 int.from_bytes(..., 'big') 一致
+                uint32_t size_net = htonl((uint32_t)enc_buf.size());
+                if (send(client_fd_, &size_net, 4, 0) <= 0 ||
+                    send(client_fd_, enc_buf.data(), enc_buf.size(), 0) <= 0) {
                     RCLCPP_WARN(this->get_logger(), "客户端断开");
                     break;
                 }

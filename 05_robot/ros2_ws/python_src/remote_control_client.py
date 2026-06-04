@@ -5,7 +5,6 @@ import struct
 import serial
 import socket
 import threading
-import cv2
 import numpy as np
 import io
 from enum import Enum
@@ -64,15 +63,11 @@ TASK_LIST = {
     10: "预留任务10"
 }
 
-# 颜色
+# 颜色（保留基本颜色供其他模块使用）
 BLACK = (0, 0, 0)
 WHITE = (255, 255, 255)
 GREEN = (0, 255, 0)
 RED = (255, 0, 0)
-GRAY = (128, 128, 128)
-YELLOW = (255, 255, 0)
-BLUE = (0, 150, 255)
-DARK_GRAY = (50, 50, 50)
 # ======================================================
 
 def calc_crc16(data: bytes) -> int:
@@ -114,19 +109,21 @@ class RobotRemote:
     def __init__(self):
         pygame.init()
         self.win_w = 1200
-        self.win_h = 720
+        self.win_h = 760
         self.screen = pygame.display.set_mode((self.win_w, self.win_h))
-        pygame.display.set_caption("人形机器人遥控系统")
+        pygame.display.set_caption("三代人形机器人远程控制系统")
 
         # 字体
         try:
-            self.font_lg = pygame.font.SysFont("Microsoft YaHei", 32, bold=True)
-            self.font_md = pygame.font.SysFont("Microsoft YaHei", 20)
-            self.font_sm = pygame.font.SysFont("Microsoft YaHei", 16)
+            self.font_title = pygame.font.SysFont("Microsoft YaHei", 28, bold=True)
+            self.font_md = pygame.font.SysFont("Microsoft YaHei", 18)
+            self.font_sm = pygame.font.SysFont("Microsoft YaHei", 14)
+            self.font_mono = pygame.font.SysFont("Microsoft YaHei", 12)
         except:
-            self.font_lg = pygame.font.SysFont("SimHei", 32, bold=True)
-            self.font_md = pygame.font.SysFont("SimHei", 20)
-            self.font_sm = pygame.font.SysFont("SimHei", 16)
+            self.font_title = pygame.font.SysFont("SimHei", 28, bold=True)
+            self.font_md = pygame.font.SysFont("SimHei", 18)
+            self.font_sm = pygame.font.SysFont("SimHei", 14)
+            self.font_mono = pygame.font.SysFont("SimHei", 12)
 
         # 按键状态
         self.key_w = False
@@ -164,11 +161,30 @@ class RobotRemote:
         self.camera_running = False
         self.camera_frame_lock = threading.Lock()  # 保护 camera_frame
 
-        # 虚拟按键位置尺寸
-        self.k_size = 60
-        self.k_gap = 10
-        self.k_cx = 200
-        self.k_cy = 420
+        # ========== 界面布局 ==========
+        # 主任务配置
+        self.main_tasks = [
+            {"id": 1, "name": "1. 语音动作组", "subs": [f"语音段落 {i}" for i in range(1, 16)]},
+            {"id": 2, "name": "2. 握手交互",   "subs": ["自动感知模式", "强制握手开启", "强制握手关闭"]},
+            {"id": 3, "name": "3. 语音交互",   "subs": ["语音问答交互模式"]},
+            {"id": 4, "name": "4. 待机模式",   "subs": ["待机模式（关闭非运控节点）"]},
+        ]
+        self.current_main_task = 0  # 当前选中的主任务索引
+        self.sub_task_states = {}   # sub_id -> bool
+        for i, main in enumerate(self.main_tasks):
+            for j, _ in enumerate(main["subs"]):
+                self.sub_task_states[f"{i}-{j}"] = False
+
+        # 日志
+        self.logs = []
+        self.add_log("远程控制系统已启动")
+        self.add_log("433MHz控制链路已连接")
+        self.add_log("915MHz图传链路已连接")
+        self.add_log("机器人处于基础运控就绪状态")
+
+        # 虚拟按键尺寸（WASD 控制区在底部中央）
+        self.k_size = 56
+        self.k_gap = 8
 
         # 串口初始化
         try:
@@ -198,6 +214,13 @@ class RobotRemote:
         # 防抖标记
         self.task_sent = False
         self.stop_sent = False
+
+    # -------------------------- 日志 --------------------------
+    def add_log(self, message, level="info"):
+        ts = time.strftime("%H:%M:%S")
+        self.logs.append((ts, message, level))
+        if len(self.logs) > 100:
+            self.logs.pop(0)
 
     # -------------------------- LAN 链路探测 (SSH 22) --------------------------
     def lan_check_loop(self):
@@ -379,7 +402,7 @@ class RobotRemote:
         self.last_tip = "相机已暂停"
 
     def camera_loop(self):
-        """相机接收线程：TCP → H.264 → OpenCV 解码"""
+        """相机接收线程：TCP → H.264 → pygame 解码"""
         sock = None
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -388,9 +411,6 @@ class RobotRemote:
             self.last_tip = "相机已连接"
             print("✅ TCP 相机已连接")
 
-            # 创建 H.264 解码器
-            h264_decoder = cv2.VideoWriter_fourcc(*'H264')
-            # OpenCV 的 VideoCapture 不能直接解 raw H.264 ES
             # 用 Python 的 av 库来解码
             try:
                 import av
@@ -462,116 +482,259 @@ class RobotRemote:
         self.linear_vel = 0.0
         self.angular_vel = 0.0
 
+    # -------------------------- 左侧任务面板鼠标点击 ----------
+    def _handle_task_click(self, mx, my):
+        panel_y = 72
+        panel_h = self.win_h - panel_y - 100
+        left_w = int(self.win_w * 0.23)
+        left_x = 12
+
+        # 检查是否在左侧面板范围内
+        if not (left_x <= mx <= left_x + left_w and panel_y <= my <= panel_y + panel_h):
+            return
+
+        content_y = panel_y + 42
+        main_w = int(left_w * 0.4) - 6
+        sub_w = left_w - main_w - 16
+
+        # 主任务点击
+        main_y = content_y
+        for i, main in enumerate(self.main_tasks):
+            rect = pygame.Rect(left_x + 10, main_y, main_w, 28)
+            if rect.collidepoint(mx, my):
+                self.current_main_task = i
+                self.add_log(f"切换到主任务: {main['name']}", "info")
+                return
+            main_y += 32
+
+        # 子任务点击
+        sub_y = content_y
+        current_main = self.main_tasks[self.current_main_task]
+        for j, sub_name in enumerate(current_main["subs"]):
+            rect = pygame.Rect(left_x + 10 + main_w + 6, sub_y, sub_w, 28)
+            if rect.collidepoint(mx, my):
+                sid = f"{self.current_main_task}-{j}"
+                new_state = not self.sub_task_states.get(sid, False)
+                self.sub_task_states[sid] = new_state
+                if new_state:
+                    self.add_log(f"已开启子任务: {sub_name}", "success")
+                else:
+                    self.add_log(f"已关闭子任务: {sub_name}", "info")
+                return
+            sub_y += 32
+
     # -------------------------- UI 绘制 --------------------------
-    def draw_key(self, text, x, y, pressed):
-        color = BLUE if pressed else DARK_GRAY
-        border = WHITE if pressed else GRAY
-        rect = (x - self.k_size//2, y - self.k_size//2, self.k_size, self.k_size)
-        pygame.draw.rect(self.screen, color, rect, border_radius=8)
-        pygame.draw.rect(self.screen, border, rect, 2, border_radius=8)
-        txt = self.font_md.render(text, True, WHITE)
-        self.screen.blit(txt, (x - txt.get_width()//2, y - txt.get_height()//2))
-
-    def draw_speed_bar(self, x, y, w, h, val, max_val, label):
-        pygame.draw.rect(self.screen, DARK_GRAY, (x, y, w, h), border_radius=4)
-        pygame.draw.rect(self.screen, GRAY, (x, y, w, h), 1, border_radius=4)
-        mid = x + w // 2
-        if val >= 0:
-            bw = int((val / max_val) * (w/2))
-            pygame.draw.rect(self.screen, GREEN, (mid, y, bw, h), border_radius=4)
-        else:
-            bw = int((abs(val) / max_val) * (w/2))
-            pygame.draw.rect(self.screen, RED, (mid - bw, y, bw, h), border_radius=4)
-        pygame.draw.line(self.screen, WHITE, (mid, y), (mid, y+h), 2)
-        lab = self.font_sm.render(label, True, WHITE)
-        val_txt = self.font_sm.render(f"{val:.2f}", True, WHITE)
-        self.screen.blit(lab, (x, y-20))
-        self.screen.blit(val_txt, (x + w - val_txt.get_width(), y-20))
-
     def draw_ui(self):
-        self.screen.fill(BLACK)
-        title = self.font_lg.render("人形机器人遥控系统", True, WHITE)
-        self.screen.blit(title, (self.win_w//2 - title.get_width()//2, 20))
-        # 通信状态: DTU 无线串口 + LAN 局域网
-        dtu = "DTU OK" if self.dtu_connected else "DTU LOST"
-        lan = "LAN OK" if self.lan_connected else "LAN LOST"
-        self.screen.blit(self.font_md.render(dtu, True, GREEN if self.dtu_connected else RED), (40, 80))
-        self.screen.blit(self.font_md.render(lan, True, GREEN if self.lan_connected else RED), (200, 80))
-        # 模块状态
-        mod_y = 110
-        online_n = sum(1 for v in self.module_statuses.values() if v)
-        total_n = len(self.module_statuses)
-        self.screen.blit(self.font_sm.render(f"模块: {online_n}/{total_n}", True, WHITE), (40, mod_y))
-        mod_y += 18
-        for name, on in self.module_statuses.items():
-            color = GREEN if on else RED
-            txt = f"  {'[ON]' if on else '[OFF]'} {name}"
-            self.screen.blit(self.font_sm.render(txt, True, color), (40, mod_y))
-            mod_y += 18
-        if mod_y < 200: mod_y = 200
-        speed_cfg = self.font_md.render(
-            f"线速度上限: {self.linear_cfg:.1f} m/s  角速度上限: {self.angular_cfg:.1f} rad/s", True, WHITE)
-        self.screen.blit(speed_cfg, (40, mod_y))
-        self.draw_speed_bar(40, mod_y + 30, 300, 20, self.linear_vel, LINEAR_SPEED_MAX, "线速度")
-        self.draw_speed_bar(40, mod_y + 80, 300, 20, self.angular_vel, ANGULAR_SPEED_MAX, "角速度")
-        self.screen.blit(self.font_md.render(f"当前操作: {self.last_tip}", True, WHITE), (40, mod_y + 130))
-        self.draw_key("W", self.k_cx, self.k_cy - self.k_size - self.k_gap, self.key_w)
-        self.draw_key("A", self.k_cx - self.k_size - self.k_gap, self.k_cy, self.key_a)
-        self.draw_key("S", self.k_cx, self.k_cy, self.key_s)
-        self.draw_key("D", self.k_cx + self.k_size + self.k_gap, self.k_cy, self.key_d)
+        self.screen.fill((26, 32, 44))  # bg-gray-900
 
-        # ========== 右侧区域（视频画面 640x480）==========
-        cam_w, cam_h = 640, 480
-        cam_x, cam_y = 520, 60
-        # 画背景区域
-        pygame.draw.rect(self.screen, DARK_GRAY, (cam_x-5, cam_y-5, cam_w+10, cam_h+45), border_radius=4)
-        if self.camera_frame is not None:
-            self.screen.blit(self.camera_frame, (cam_x, cam_y))
-        if not self.camera_playing:
-            # 暂停覆盖层
-            overlay = pygame.Surface((cam_w, cam_h), pygame.SRCALPHA)
-            overlay.fill((0, 0, 0, 160))
-            self.screen.blit(overlay, (cam_x, cam_y))
-            pause_text = self.font_md.render("⏸ 已暂停 [C键播放]", True, WHITE)
-            self.screen.blit(pause_text, (cam_x + cam_w//2 - pause_text.get_width()//2,
-                                          cam_y + cam_h//2 - pause_text.get_height()//2))
-        # 状态指示
-        if self.camera_playing:
-            cam_label = self.font_sm.render("▶ 播放中 [C键暂停]", True, GREEN)
-        else:
-            cam_label = self.font_sm.render("⏸ 已暂停 [C键播放]", True, GRAY)
-        self.screen.blit(cam_label, (cam_x, cam_y + cam_h + 5))
+        # ==================== 标题栏 ====================
+        title = self.font_title.render("三代人形机器人远程控制系统", True, (96, 165, 250))
+        self.screen.blit(title, (self.win_w//2 - title.get_width()//2, 10))
+        sub = self.font_sm.render("433MHz控制链路 | 915MHz图传链路", True, (156, 163, 175))
+        self.screen.blit(sub, (self.win_w//2 - sub.get_width()//2, 44))
 
-        # 操作说明
-        help_title = self.font_md.render("操作说明", True, WHITE)
-        self.screen.blit(help_title, (cam_x, cam_y + cam_h + 25))
-        help_texts = [
-            "W / S ：前进 / 后退",
-            "A / D ：左转 / 右转",
-            "数字 1~10 ：执行预设任务",
-            "空格 ：紧急停止",
-            "C   ：相机播放 / 暂停",
-            "ESC ：退出程序"
-        ]
-        y = cam_y + cam_h + 50
-        for text in help_texts:
-            t = self.font_sm.render(text, True, GRAY)
-            self.screen.blit(t, (cam_x, y))
-            y += 20
+        # ==================== 三列布局 ====================
+        panel_y = 72
+        panel_h = self.win_h - panel_y - 100  # 留底部给WASD
+
+        # ---- 左侧面板：任务控制 (col-span-3) ----
+        left_w = int(self.win_w * 0.23)
+        left_x = 12
+        self._draw_panel(left_x, panel_y, left_w, panel_h, "任务指令控制", (96, 165, 250, 255))
+        self._draw_task_panel(left_x, panel_y, left_w, panel_h)
+
+        # ---- 中间面板：视频 (col-span-6) ----
+        mid_x = left_x + left_w + 10
+        mid_w = int(self.win_w * 0.5)
+        self._draw_panel(mid_x, panel_y, mid_w, panel_h, "机器人胸口摄像头", (96, 165, 250, 255))
+        self._draw_video_panel(mid_x, panel_y, mid_w, panel_h)
+
+        # ---- 右侧面板：操作日志 (col-span-3) ----
+        right_x = mid_x + mid_w + 10
+        right_w = self.win_w - right_x - 12
+        self._draw_panel(right_x, panel_y, right_w, panel_h, "操作日志", (96, 165, 250, 255))
+        self._draw_log_panel(right_x, panel_y, right_w, panel_h)
+
+        # ==================== 底部WASD控制区 ====================
+        self._draw_wasd_panel()
 
         pygame.display.flip()
+
+    # ---------- 辅助：画面板背景 ----------
+    def _draw_panel(self, x, y, w, h, title, color):
+        pygame.draw.rect(self.screen, (31, 41, 55), (x, y, w, h), border_radius=8)
+        title_surf = self.font_md.render(title, True, (color[0], color[1], color[2]))
+        self.screen.blit(title_surf, (x + 12, y + 8))
+        pygame.draw.line(self.screen, (75, 85, 99), (x + 12, y + 34), (x + w - 12, y + 34), 1)
+
+    # ---------- 左侧：任务面板 ----------
+    def _draw_task_panel(self, px, py, pw, ph):
+        content_y = py + 42
+        content_h = ph - 50
+
+        # 主任务列表（左半）
+        main_w = int(pw * 0.4) - 6
+        sub_w = pw - main_w - 16
+
+        main_y = content_y
+        for i, main in enumerate(self.main_tasks):
+            active = (i == self.current_main_task)
+            bg = (30, 64, 175) if active else (55, 65, 81)
+            rect = pygame.Rect(px + 10, main_y, main_w, 28)
+            pygame.draw.rect(self.screen, bg, rect, border_radius=4)
+            if active:
+                pygame.draw.rect(self.screen, (96, 165, 250), rect, 2, border_radius=4)
+            txt = self.font_sm.render(main["name"], True, (255, 255, 255))
+            self.screen.blit(txt, (rect.x + 6, rect.y + 5))
+            main_y += 32
+
+        # 子任务列表（右半）
+        sub_y = content_y
+        current_main = self.main_tasks[self.current_main_task]
+        for j, sub_name in enumerate(current_main["subs"]):
+            sid = f"{self.current_main_task}-{j}"
+            on = self.sub_task_states.get(sid, False)
+            bg = (55, 65, 81)
+            rect = pygame.Rect(px + 10 + main_w + 6, sub_y, sub_w, 28)
+            pygame.draw.rect(self.screen, bg, rect, border_radius=4)
+            txt = self.font_sm.render(sub_name, True, (255, 255, 255))
+            self.screen.blit(txt, (rect.x + 6, rect.y + 5))
+            # 状态灯
+            dot_color = (34, 197, 94) if on else (107, 114, 128)
+            pygame.draw.circle(self.screen, dot_color, (rect.right - 10, rect.y + 14), 5)
+            sub_y += 32
+
+        # 底部：系统状态
+        status_y = py + ph - 70
+        pygame.draw.line(self.screen, (75, 85, 99), (px + 12, status_y - 6), (px + pw - 12, status_y - 6), 1)
+        st = self.font_sm.render("系统状态", True, (134, 239, 172))
+        self.screen.blit(st, (px + 12, status_y))
+        ctrl = "已连接" if self.dtu_connected else "已断开"
+        ctrl_c = (34, 197, 94) if self.dtu_connected else (239, 68, 68)
+        video = "已连接" if self.lan_connected else "已断开"
+        video_c = (34, 197, 94) if self.lan_connected else (239, 68, 68)
+        self.screen.blit(self.font_sm.render(f"控制链路:", True, (255,255,255)), (px + 12, status_y + 22))
+        self.screen.blit(self.font_sm.render(ctrl, True, ctrl_c), (px + pw - 90, status_y + 22))
+        self.screen.blit(self.font_sm.render(f"图传链路:", True, (255,255,255)), (px + 12, status_y + 42))
+        self.screen.blit(self.font_sm.render(video, True, video_c), (px + pw - 90, status_y + 42))
+
+    # ---------- 中间：视频面板 ----------
+    def _draw_video_panel(self, px, py, pw, ph):
+        content_y = py + 42
+        vw = pw - 24
+        vh = ph - 80
+        # 视频背景
+        pygame.draw.rect(self.screen, (0, 0, 0), (px + 12, content_y, vw, vh), border_radius=6)
+        if self.camera_frame is not None and self.camera_playing:
+            # 缩放视频到合适大小
+            frame_scaled = pygame.transform.scale(self.camera_frame, (vw, vh))
+            self.screen.blit(frame_scaled, (px + 12, content_y))
+        elif not self.camera_playing:
+            # 暂停覆盖
+            overlay = pygame.Surface((vw, vh), pygame.SRCALPHA)
+            overlay.fill((0, 0, 0, 180))
+            self.screen.blit(overlay, (px + 12, content_y))
+            pause = self.font_md.render("⏸ 已暂停 [C键播放]", True, (255, 255, 255))
+            self.screen.blit(pause, (px + 12 + vw//2 - pause.get_width()//2,
+                                     content_y + vh//2 - pause.get_height()//2))
+        else:
+            # 等待连接
+            wait = self.font_md.render("等待视频流连接...", True, (107, 114, 128))
+            self.screen.blit(wait, (px + 12 + vw//2 - wait.get_width()//2,
+                                    content_y + vh//2 - wait.get_height()//2))
+
+        # 视频信息
+        info_y = content_y + vh + 8
+        self.screen.blit(self.font_sm.render("分辨率: 480P@30fps", True, (156, 163, 175)), (px + 12, info_y))
+        cw = int(self.font_sm.size("分辨率: 480P@30fps")[0])
+        self.screen.blit(self.font_sm.render("编码: H.264", True, (156, 163, 175)), (px + 12 + cw + 30, info_y))
+        self.screen.blit(self.font_sm.render("延迟: <150ms", True, (156, 163, 175)), (px + pw - 90, info_y))
+
+    # ---------- 右侧：日志面板 ----------
+    def _draw_log_panel(self, px, py, pw, ph):
+        content_y = py + 42
+        log_h = ph - 50
+        # 画日志背景
+        log_rect = pygame.Rect(px + 10, content_y, pw - 20, log_h)
+        pygame.draw.rect(self.screen, (17, 24, 39), log_rect, border_radius=4)
+
+        # 显示最近日志
+        vis_count = min(len(self.logs), int(log_h / 18))
+        start = len(self.logs) - vis_count
+        for i in range(vis_count):
+            ts, msg, level = self.logs[start + i]
+            if level == "success":
+                c = (34, 197, 94)
+            elif level == "warning":
+                c = (250, 204, 21)
+            elif level == "error":
+                c = (239, 68, 68)
+            else:
+                c = (156, 163, 175)
+            txt = f"[{ts}] {msg}"
+            surf = self.font_mono.render(txt, True, c)
+            self.screen.blit(surf, (log_rect.x + 6, log_rect.y + 6 + i * 18))
+
+        # 操作说明
+        help_y = content_y + log_h + 10
+        help_title = self.font_md.render("操作说明", True, (250, 204, 21))
+        self.screen.blit(help_title, (px + 12, help_y))
+        helps = [
+            "• WASD键: 控制机器人移动",
+            "• 数字键1-4: 切换主任务分类",
+            "• 空格键: 紧急停止所有运动",
+            "• C键: 相机播放/暂停",
+        ]
+        for i, h in enumerate(helps):
+            self.screen.blit(self.font_sm.render(h, True, (209, 213, 219)), (px + 12, help_y + 24 + i * 20))
+
+    # ---------- 底部：WASD 控制 ----------
+    def _draw_wasd_panel(self):
+        panel_y = self.win_h - 90
+        panel_h = 82
+        pygame.draw.rect(self.screen, (31, 41, 55), (12, panel_y, self.win_w - 24, panel_h), border_radius=8)
+        title = self.font_md.render("运动控制", True, (96, 165, 250))
+        self.screen.blit(title, (24, panel_y + 6))
+        pygame.draw.line(self.screen, (75, 85, 99), (24, panel_y + 30), (self.win_w - 24, panel_y + 30), 1)
+
+        # WASD 按键在底部居中
+        cx = self.win_w // 2
+        cy = panel_y + panel_h // 2
+        s = self.k_size
+        g = self.k_gap
+
+        # 绘制4个按键
+        keys_state = {"W": self.key_w, "A": self.key_a, "S": self.key_s, "D": self.key_d}
+        positions = {"W": (cx, cy - s - g), "A": (cx - s - g, cy),
+                     "S": (cx, cy), "D": (cx + s + g, cy)}
+
+        for k, (kx, ky) in positions.items():
+            pressed = keys_state[k]
+            color = (59, 130, 246) if pressed else (55, 65, 81)
+            border = (255, 255, 255) if pressed else (107, 114, 128)
+            rect = (kx - s//2, ky - s//2, s, s)
+            pygame.draw.rect(self.screen, color, rect, border_radius=6)
+            pygame.draw.rect(self.screen, border, rect, 2, border_radius=6)
+            txt = self.font_md.render(k, True, (255, 255, 255))
+            self.screen.blit(txt, (kx - txt.get_width()//2, ky - txt.get_height()//2))
+
+        # 底部提示
+        hint = self.font_sm.render("W=前进 | S=后退 | A=左转 | D=右转 | 空格=紧急停止", True, (156, 163, 175))
+        self.screen.blit(hint, (self.win_w//2 - hint.get_width()//2, panel_y + panel_h - 18))
 
     def run(self):
         clock = pygame.time.Clock()
         running = True
-        print("========== 人形机器人遥控系统启动 ==========")
-        print("✅ 按住WASD持续发送运动指令，松开自动停止")
-        print("W 前进  S 后退  A 左转  D 右转")
-        print("数字键 1-0 执行预设任务 | 空格 急停 | ESC 退出")
-        print("==========================================\n")
+        print("========== 三代人形机器人远程控制系统 ==========")
+        print("✅ WASD 运动控制 | 数字键 1-4 主任务 | 空格 急停")
+        print("================================================\n")
 
         old_w, old_a, old_s, old_d = False, False, False, False
         was_moving = False  # 记录上一帧是否在运动
+
+        # 任务点击防抖
+        main_task_clicked = False
+        sub_task_clicked = False
 
         while running:
             current_time = time.time()
@@ -583,49 +746,53 @@ class RobotRemote:
             self.key_s = keys[pygame.K_s]
             self.key_d = keys[pygame.K_d]
 
-            # WASD 按键打印提示
+            # WASD 按键日志
             if self.key_w and not old_w:
-                print("按下 W")
                 self.last_tip = "W - 前进"
+                self.add_log("运动指令: W 前进", "info")
             if not self.key_w and old_w:
-                print("松开 W")
+                self.add_log("停止指令: W 松开", "info")
             if self.key_a and not old_a:
-                print("按下 A")
                 self.last_tip = "A - 左转"
+                self.add_log("运动指令: A 左转", "info")
             if not self.key_a and old_a:
-                print("松开 A")
+                self.add_log("停止指令: A 松开", "info")
             if self.key_s and not old_s:
-                print("按下 S")
                 self.last_tip = "S - 后退"
+                self.add_log("运动指令: S 后退", "info")
             if not self.key_s and old_s:
-                print("松开 S")
+                self.add_log("停止指令: S 松开", "info")
             if self.key_d and not old_d:
-                print("按下 D")
                 self.last_tip = "D - 右转"
+                self.add_log("运动指令: D 右转", "info")
             if not self.key_d and old_d:
-                print("松开 D")
+                self.add_log("停止指令: D 松开", "info")
 
             old_w, old_a, old_s, old_d = self.key_w, self.key_a, self.key_s, self.key_d
 
-            # 事件循环：数字键/空格/ESC 单次触发指令
+            # 事件循环
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     running = False
 
                 if event.type == pygame.KEYDOWN:
-                    # 数字键：预设任务
-                    if pygame.K_1 <= event.key <= pygame.K_9:
+                    # 数字键1-4：切换主任务
+                    if pygame.K_1 <= event.key <= pygame.K_4:
+                        idx = event.key - pygame.K_1
+                        if idx < len(self.main_tasks):
+                            self.current_main_task = idx
+                            self.add_log(f"切换到主任务: {self.main_tasks[idx]['name']}", "info")
+
+                    # 数字键5-0：预设任务
+                    elif pygame.K_5 <= event.key <= pygame.K_9:
+                        num = event.key - pygame.K_0
                         if not self.task_sent:
-                            num = event.key - pygame.K_0
-                            print(f"按下 数字 {num}，执行任务: {TASK_LIST[num]}")
                             self.last_tip = f"执行任务: {TASK_LIST[num]}"
-                            # 设置重发（立即发第一次 + 后续重复）
                             self.task_retry_count = self.task_retry_max
                             self.task_retry_num = num
                             self.task_sent = True
                     elif event.key == pygame.K_0:
                         if not self.task_sent:
-                            print(f"按下 数字 0，执行任务: {TASK_LIST[10]}")
                             self.last_tip = f"执行任务: {TASK_LIST[10]}"
                             self.task_retry_count = self.task_retry_max
                             self.task_retry_num = 10
@@ -634,9 +801,9 @@ class RobotRemote:
                     # 空格：急停指令
                     elif event.key == pygame.K_SPACE:
                         if not self.stop_sent:
-                            print("按下 空格 — 紧急停止")
                             self.last_tip = "紧急停止"
                             self.send_stop_cmd()
+                            self.add_log("紧急停止已触发", "warning")
                             self.stop_sent = True
 
                     # C 键播放/暂停相机
@@ -649,11 +816,16 @@ class RobotRemote:
 
                 # 按键抬起，解除防抖 + 立即停止重发
                 if event.type == pygame.KEYUP:
-                    if pygame.K_1 <= event.key <= pygame.K_9 or event.key == pygame.K_0:
+                    if pygame.K_5 <= event.key <= pygame.K_9 or event.key == pygame.K_0:
                         self.task_sent = False
-                        self.task_retry_count = 0  # 松开立即停止重发
+                        self.task_retry_count = 0
                     if event.key == pygame.K_SPACE:
                         self.stop_sent = False
+
+                # ---- 鼠标点击：左侧任务面板 ----
+                if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                    mx, my = event.pos
+                    self._handle_task_click(mx, my)
 
             # 更新速度和运动状态
             self.update_speed()

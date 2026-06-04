@@ -544,11 +544,17 @@ void ModuleManager::interpolateSpeedLoop()
     }
 
     // ---- 发布 cmd_vel ----
-    geometry_msgs::msg::Twist t;
-    t.linear.x = current_linear_;
-    t.linear.y = 0.0;
-    t.angular.z = current_angular_;
-    cmd_vel_pub_->publish(t);
+    // 只有速度不为零时才发布；目标与当前均为零时跳过发布（运控保持上次指令）
+    bool both_zero = (std::abs(current_linear_) < 0.001f && std::abs(current_angular_) < 0.001f &&
+                      std::abs(tgt_linear) < 0.001f && std::abs(tgt_angular) < 0.001f);
+
+    if (!both_zero) {
+      geometry_msgs::msg::Twist t;
+      t.linear.x = current_linear_;
+      t.linear.y = 0.0;
+      t.angular.z = current_angular_;
+      cmd_vel_pub_->publish(t);
+    }
 
     rate.sleep();
   }

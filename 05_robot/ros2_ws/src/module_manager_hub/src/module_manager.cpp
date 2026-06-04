@@ -222,67 +222,99 @@ void ModuleManager::doSerialRead()
       serial_rx_frame_.insert(serial_rx_frame_.end(),
                               serial_rx_buf_.begin(), serial_rx_buf_.begin() + bytes);
 
-      // 尝试从缓存中解析完整帧
+      // 尝试从缓存中解析完整帧（32 字节固定帧长）
       while (true) {
         auto &buf = serial_rx_frame_;
+        if (buf.size() < SERIAL_FRAME_LEN) break;
 
-        // 找 SOF
-        auto sof_it = std::find(buf.begin(), buf.end(), SERIAL_SOF);
+        // 找帧头 0xAA 0x55
+        auto sof_it = std::search(buf.begin(), buf.end(),
+                                  serial_rx_frame_end_marker_, serial_rx_frame_end_marker_ + 2);
         if (sof_it == buf.end()) {
           buf.clear();
           break;
         }
 
-        // 扔掉 SOF 之前的数据
+        // 扔掉帧头之前的数据
         if (sof_it != buf.begin()) {
           buf.erase(buf.begin(), sof_it);
         }
 
-        // 需要至少 SOF(1) + CmdType(1) + PayLen(1) = 3 字节才能知道帧长
-        if (buf.size() < SERIAL_HEADER_LEN) break;
+        if (buf.size() < SERIAL_FRAME_LEN) break;
 
-        uint8_t cmd_type  = buf[1];
-        uint8_t pay_len   = buf[2];
-        size_t frame_len  = SERIAL_HEADER_LEN + pay_len + SERIAL_CHECKSUM_LEN;
+        // CRC16 校验（从 CmdType 到保留末尾，共 30 字节）
+        uint16_t recv_crc = static_cast<uint16_t>(buf[SERIAL_FRAME_LEN - 2]) |
+                            (static_cast<uint16_t>(buf[SERIAL_FRAME_LEN - 1]) << 8);
+        uint16_t calc_crc = calcCRC16(buf.data() + 2, SERIAL_FRAME_LEN - 4);
 
-        if (buf.size() < frame_len) break;  // 还没收完
-
-        // 校验和检查
-        uint8_t recv_cs = buf[frame_len - 1];
-        uint8_t calc_cs = calcChecksum(buf.data() + 1, frame_len - 2);  // 从 CmdType 到 Payload 末尾
-        if (recv_cs != calc_cs) {
-          RCLCPP_WARN(this->get_logger(), "串口帧校验和错误, 丢弃");
-          buf.erase(buf.begin(), buf.begin() + frame_len);
+        if (recv_crc != calc_crc) {
+          RCLCPP_WARN(this->get_logger(), "串口帧 CRC16 校验错误, 丢弃");
+          buf.erase(buf.begin(), buf.begin() + SERIAL_FRAME_LEN);
           continue;
         }
 
         // 解析并执行
-        parseSerialPacket(buf.data() + SERIAL_HEADER_LEN, pay_len, cmd_type);
+        uint8_t cmd_type = buf[2];
+        uint8_t pay_len  = buf[3];
+        parseSerialPacket(buf.data() + SERIAL_HEADER_LEN, std::min(pay_len, static_cast<uint8_t>(SERIAL_DATA_LEN)), cmd_type);
 
         // 移除已处理的帧
-        buf.erase(buf.begin(), buf.begin() + frame_len);
+        buf.erase(buf.begin(), buf.begin() + SERIAL_FRAME_LEN);
       }
 
       doSerialRead();
     });
 }
 
-uint8_t ModuleManager::calcChecksum(const uint8_t *data, size_t len)
+uint16_t ModuleManager::calcCRC16(const uint8_t *data, size_t len)
 {
-  uint8_t cs = 0;
-  for (size_t i = 0; i < len; i++) cs ^= data[i];
-  return cs;
+  uint16_t crc = 0xFFFF;
+  for (size_t i = 0; i < len; i++) {
+    crc ^= data[i];
+    for (int j = 0; j < 8; j++) {
+      if (crc & 0x0001)
+        crc = (crc >> 1) ^ 0xA001;
+      else
+        crc >>= 1;
+    }
+  }
+  return crc;
+}
+
+void ModuleManager::buildSerialFrame(uint8_t cmd_type, const uint8_t *payload, size_t payload_len,
+                                     std::vector<uint8_t> &out_frame)
+{
+  out_frame.clear();
+  out_frame.reserve(SERIAL_FRAME_LEN);
+
+  // 帧头 2 字节
+  out_frame.push_back(SERIAL_SOF0);
+  out_frame.push_back(SERIAL_SOF1);
+
+  // 指令类型 + 数据长度
+  out_frame.push_back(cmd_type);
+  out_frame.push_back(static_cast<uint8_t>(std::min(payload_len, SERIAL_DATA_LEN)));
+
+  // 数据域 16 字节（填充 0）
+  uint8_t data_field[SERIAL_DATA_LEN] = {0};
+  size_t copy_len = std::min(payload_len, SERIAL_DATA_LEN);
+  std::memcpy(data_field, payload, copy_len);
+  out_frame.insert(out_frame.end(), data_field, data_field + SERIAL_DATA_LEN);
+
+  // 保留 10 字节（全 0）
+  uint8_t reserved[SERIAL_RESERVED] = {0};
+  out_frame.insert(out_frame.end(), reserved, reserved + SERIAL_RESERVED);
+
+  // CRC16（从 CmdType 到保留末尾）
+  uint16_t crc = calcCRC16(out_frame.data() + 2, SERIAL_FRAME_LEN - 4);
+  out_frame.push_back(static_cast<uint8_t>(crc & 0xFF));
+  out_frame.push_back(static_cast<uint8_t>((crc >> 8) & 0xFF));
 }
 
 void ModuleManager::sendSerialResponse(uint8_t cmd_type, const uint8_t *payload, size_t payload_len)
 {
-  // 通用异步写（目前仅保留接口，心跳已走独立的同步写路径）
   auto frame = std::make_shared<std::vector<uint8_t>>();
-  frame->push_back(SERIAL_SOF);
-  frame->push_back(cmd_type | 0x80);
-  frame->push_back(static_cast<uint8_t>(payload_len));
-  frame->insert(frame->end(), payload, payload + payload_len);
-  frame->push_back(calcChecksum(frame->data() + 1, frame->size() - 1));
+  buildSerialFrame(cmd_type, payload, payload_len, *frame);
 
   boost::asio::async_write(serial_port_, boost::asio::buffer(*frame),
     [this, frame](boost::system::error_code ec, std::size_t /*bytes*/) {
@@ -303,8 +335,8 @@ void ModuleManager::parseSerialPacket(const uint8_t *payload, size_t pay_len, ui
 
   switch (cmd_type)
   {
-    // ---- cmd_type=1: 运动指令（仅更新目标速度，由 speed_timer_ 以 50Hz 插值输出） ----
-    case 1: {
+    // ---- CMD_MOVE: 运动指令（仅更新目标速度，由 speed_timer_ 以 50Hz 插值输出） ----
+    case CMD_MOVE: {
       if (pay_len < 8) { RCLCPP_WARN(this->get_logger(), "运动指令长度不足"); break; }
       float linear  = 0, angular = 0;
       memcpy(&linear,  payload,      sizeof(float));
@@ -322,8 +354,8 @@ void ModuleManager::parseSerialPacket(const uint8_t *payload, size_t pay_len, ui
       break;
     }
 
-    // ---- cmd_type=2: 任务指令（数字键） ----
-    case 2: {
+    // ---- CMD_TASK: 任务指令（数字键） ----
+    case CMD_TASK: {
       // 防误触：2秒内连续的数字键命令只响应第一个
       double now = this->now().seconds();
       if (now - last_task_cmd_time_ < TASK_CMD_DEBOUNCE_SEC) {
@@ -353,8 +385,8 @@ void ModuleManager::parseSerialPacket(const uint8_t *payload, size_t pay_len, ui
       break;
     }
 
-    // ---- cmd_type=3: 急停 ----
-    case 3: {
+    // ---- CMD_HEARTBEAT / CMD_STATUS: 控制端复用 0x03 作急停 ----
+    case CMD_HEARTBEAT: {
       RCLCPP_WARN(this->get_logger(), ">>> 急停 <<<");
       target_linear_ = 0.0f;  target_angular_ = 0.0f;
       current_linear_ = 0.0f; current_angular_ = 0.0f;
@@ -605,8 +637,7 @@ void ModuleManager::monitorTimerCallback()
 
 void ModuleManager::sendSerialStatus()
 {
-  // 直接在 ROS 线程同步写心跳，不再经过 io_context
-  // 6 字节的心跳帧在 115200 波特率下耗时 < 1ms，不会阻塞 ROS 线程
+  // 直接在 ROS 线程同步写，32 字节帧在 115200 波特率下耗时 < 3ms
   static const char* mod_ids[] = {
     "lower_body", "upper_body", "imu_driver",
     "remote_interface", "usb_camera", nullptr
@@ -617,21 +648,21 @@ void ModuleManager::sendSerialStatus()
       mask |= (1 << i);
   }
 
-  uint8_t payload[4] = {0x01, (uint8_t)(mask >> 8), (uint8_t)(mask & 0xFF), 0x00};
+  // 状态反馈 payload: 模块状态位图(2B) + 控制模式(1B) + 开关状态(1B) + 保留(12B)
+  uint8_t payload[SERIAL_DATA_LEN] = {0};
+  payload[0] = static_cast<uint8_t>((mask >> 8) & 0xFF);
+  payload[1] = static_cast<uint8_t>(mask & 0xFF);
+  // payload[2] 可用于扩展
 
   // 拼帧并同步发送
   std::vector<uint8_t> frame;
-  frame.push_back(SERIAL_SOF);
-  frame.push_back(0xF0 | 0x80);
-  frame.push_back(4);
-  frame.insert(frame.end(), payload, payload + 4);
-  frame.push_back(calcChecksum(frame.data() + 1, frame.size() - 1));
+  buildSerialFrame(CMD_STATUS, payload, SERIAL_DATA_LEN, frame);
 
   boost::system::error_code ec;
   boost::asio::write(serial_port_, boost::asio::buffer(frame), ec);
   if (ec) {
     RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
-      "串口心跳发送失败: %s", ec.message().c_str());
+      "串口状态发送失败: %s", ec.message().c_str());
   }
 }
 

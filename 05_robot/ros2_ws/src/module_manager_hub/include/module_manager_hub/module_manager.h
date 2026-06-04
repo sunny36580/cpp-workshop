@@ -20,11 +20,21 @@
 
 using boost::asio::buffer;
 
-// 二进制串口协议常量
-constexpr uint8_t SERIAL_SOF       = 0xAA;
-constexpr size_t  SERIAL_HEADER_LEN = 3;  // SOF + CmdType + PayLen
-constexpr size_t  SERIAL_CHECKSUM_LEN = 1;
-constexpr size_t  SERIAL_BUF_SIZE  = 256;
+// 二进制串口协议常量（32字节固定帧）
+constexpr uint8_t  SERIAL_SOF0      = 0xAA;
+constexpr uint8_t  SERIAL_SOF1      = 0x55;
+constexpr size_t   SERIAL_HEADER_LEN = 4;   // SOF0 + SOF1 + CmdType + PayLen
+constexpr size_t   SERIAL_DATA_LEN   = 16;  // 数据域固定 16 字节
+constexpr size_t   SERIAL_RESERVED   = 10;  // 保留 10 字节
+constexpr size_t   SERIAL_CRC_LEN    = 2;   // CRC16 2 字节
+constexpr size_t   SERIAL_FRAME_LEN  = SERIAL_HEADER_LEN + SERIAL_DATA_LEN + SERIAL_RESERVED + SERIAL_CRC_LEN;  // = 32
+constexpr size_t   SERIAL_BUF_SIZE   = SERIAL_FRAME_LEN * 4;
+
+// 指令类型
+constexpr uint8_t CMD_MOVE    = 0x01;  // 速度指令
+constexpr uint8_t CMD_TASK    = 0x02;  // 任务指令
+constexpr uint8_t CMD_HEARTBEAT = 0x03; // 心跳包
+constexpr uint8_t CMD_STATUS  = 0x04;  // 状态反馈
 
 struct CmdRoute {
   std::string topic;
@@ -82,13 +92,16 @@ private:
   void parseSerialPacket(const uint8_t *payload, size_t pay_len, uint8_t cmd_type);
   void sendSerialResponse(uint8_t cmd_type, const uint8_t *payload, size_t payload_len);
   void sendSerialStatus();  // 定期向遥控端回发模块状态
-  static uint8_t calcChecksum(const uint8_t *data, size_t len);
+  static uint16_t calcCRC16(const uint8_t *data, size_t len);
+  void buildSerialFrame(uint8_t cmd_type, const uint8_t *payload, size_t payload_len,
+                        std::vector<uint8_t> &out_frame);
 
   boost::asio::io_context io_context_;
   boost::asio::serial_port serial_port_;
   std::thread io_thread_;  // io_context 运行线程
   std::array<uint8_t, SERIAL_BUF_SIZE> serial_rx_buf_;
   std::vector<uint8_t> serial_rx_frame_;  // 帧缓存（跨多次读取拼接）
+  uint8_t serial_rx_frame_end_marker_[2] = {SERIAL_SOF0, SERIAL_SOF1};  // 用于查找帧头
 
   // 指令路由
   void loadCmdRoute(const YAML::Node &route_node);

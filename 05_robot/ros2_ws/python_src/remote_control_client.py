@@ -13,7 +13,7 @@ from enum import Enum
 # ====================== 基础配置 ======================
 LINEAR_SPEED_MAX = 0.6   # 运控节点线速度上限 (m/s)
 ANGULAR_SPEED_MAX = 1.0  # 运控节点角速度上限 (rad/s)
-CMD_SEND_RATE = 20        # 运动指令发送频率(Hz)
+CMD_SEND_RATE = 7       # 运动指令发送频率(Hz)
 
 # 相机推流配置
 CAMERA_IP = "192.168.9.253"   # 机端IP地址
@@ -25,8 +25,20 @@ CAMERA_PORT = 8888             # TCP 推流端口
 SERIAL_PORT = "COM3"
 SERIAL_BAUD = 115200
 
-# 二进制协议常量（与 C++ 端保持一致）
-SERIAL_SOF = 0xAA
+# 二进制协议常量（32 字节固定帧，与 C++ 端保持一致）
+SERIAL_SOF0 = 0xAA
+SERIAL_SOF1 = 0x55
+SERIAL_HEADER_LEN = 4   # SOF0 + SOF1 + CmdType + PayLen
+SERIAL_DATA_LEN = 16    # 数据域固定 16 字节
+SERIAL_RESERVED = 10    # 保留 10 字节
+SERIAL_CRC_LEN = 2      # CRC16 2 字节
+SERIAL_FRAME_LEN = SERIAL_HEADER_LEN + SERIAL_DATA_LEN + SERIAL_RESERVED + SERIAL_CRC_LEN  # = 32
+
+# 指令类型
+CMD_MOVE = 0x01      # 速度指令
+CMD_TASK = 0x02      # 任务指令
+CMD_HEARTBEAT = 0x03 # 心跳包
+CMD_STATUS = 0x04    # 状态反馈
 
 # ====================== 通信状态 + 模块ID映射 ======================
 # 模块ID与C++端 bit 位一一对应
@@ -34,9 +46,9 @@ MODULE_IDS = ["lower_body", "upper_body", "imu_driver", "remote_interface", "usb
 
 # ====================== 指令类型枚举 ======================
 class CmdType(Enum):
-    MOVE = 1    # 运动控制: payload = linear_f32 + angular_f32
-    TASK = 2    # 预设任务: payload = task_id_u8
-    STOP = 3    # 紧急停止: payload 空
+    MOVE = 1    # 0x01 运动控制: payload = linear_f32 + angular_f32
+    TASK = 2    # 0x02 预设任务: payload = task_id_u8
+    STOP = 3    # 0x03 紧急停止（与机端心跳复用同一数值，但由控制端主动发送）
 
 # ====================== 10个预设任务定义 ======================
 TASK_LIST = {
@@ -63,20 +75,38 @@ BLUE = (0, 150, 255)
 DARK_GRAY = (50, 50, 50)
 # ======================================================
 
-def calc_checksum(data: bytes) -> int:
-    """XOR 校验和，与 C++ 端 calcChecksum 一致"""
-    cs = 0
+def calc_crc16(data: bytes) -> int:
+    """CRC16-Modbus 校验，与 C++ 端 calcCRC16 一致"""
+    crc = 0xFFFF
     for b in data:
-        cs ^= b
-    return cs
+        crc ^= b
+        for _ in range(8):
+            if crc & 0x0001:
+                crc = (crc >> 1) ^ 0xA001
+            else:
+                crc >>= 1
+    return crc
 
 def build_frame(cmd_type: int, payload: bytes = b"") -> bytes:
-    """构建二进制帧: SOF(1) + CmdType(1) + PayLen(1) + Payload(N) + Checksum(1)"""
-    frame = bytes([SERIAL_SOF, cmd_type & 0xFF, len(payload) & 0xFF])
-    frame += payload
-    # 校验和从 CmdType 算到 Payload 末尾
-    cs = calc_checksum(frame[1:])  # 从 CmdType 开始
-    frame += bytes([cs])
+    """构建 32 字节固定帧:
+       帧头(2) + CmdType(1) + PayLen(1) + 数据域(16) + 保留(10) + CRC16(2)
+    """
+    frame = bytes([SERIAL_SOF0, SERIAL_SOF1, cmd_type & 0xFF, len(payload) & 0xFF])
+
+    # 数据域 16 字节（填充 0）
+    data_field = bytearray(SERIAL_DATA_LEN)
+    copy_len = min(len(payload), SERIAL_DATA_LEN)
+    data_field[:copy_len] = payload[:copy_len]
+    frame += bytes(data_field)
+
+    # 保留 10 字节（全 0）
+    frame += bytes(SERIAL_RESERVED)
+
+    # CRC16（从 CmdType 到保留末尾）
+    crc = calc_crc16(frame[2:])  # 从 CmdType 开始算
+    frame += bytes([crc & 0xFF, (crc >> 8) & 0xFF])
+
+    assert len(frame) == SERIAL_FRAME_LEN, f"帧长度错误: {len(frame)} != {SERIAL_FRAME_LEN}"
     return frame
 
 
@@ -186,10 +216,13 @@ class RobotRemote:
     def serial_rx_loop(self):
         rx_count = 0
         last_rx = time.time()
+        rx_buf = b""
         while self.ser and self.ser.is_open:
             try:
-                if self.ser.read(1) != bytes([SERIAL_SOF]):
-                    # 超时检测：2.5秒没收到 C++ 心跳 → 标记离线
+                # 读取原始数据
+                chunk = self.ser.read(SERIAL_FRAME_LEN)
+                if not chunk:
+                    # 超时检测
                     if last_rx > 0 and time.time() - last_rx > 2.5:
                         print("[TIMEOUT] C++ 心跳超时，标记离线")
                         self.dtu_connected = False
@@ -197,32 +230,56 @@ class RobotRemote:
                             self.module_statuses[name] = False
                         last_rx = 0
                     continue
-                rest = self.ser.read(2)
-                if len(rest) < 2: continue
-                cmd_type, pay_len = rest[0], rest[1]
-                if pay_len > 64: continue
-                payload = self.ser.read(pay_len + 1)
-                if len(payload) < pay_len + 1: continue
-                data, recv_cs = payload[:pay_len], payload[pay_len]
-                calc_cs = 0
-                for x in rest + data: calc_cs ^= x
-                if calc_cs != recv_cs: continue
-                # 任何有效帧都刷新心跳计时（C++ 每 ~500ms 发 0xF0）
-                self.dtu_connected = True
-                last_rx = time.time()
-                if cmd_type == 0xF0 and pay_len >= 4:
-                    mask = (data[1] << 8) | data[2]
-                    for i, name in enumerate(MODULE_IDS):
-                        self.module_statuses[name] = bool(mask & (1 << i))
-                    rx_count += 1
-                    if rx_count % 10 == 0:
-                        print(f"[STATUS] 第{rx_count}次心跳, 模块在线: {sum(1 for v in self.module_statuses.values() if v)}")
-                else:
-                    # 收到非F0帧（来自C++的其他响应或噪声）
-                    pass
+
+                rx_buf += chunk
+
+                # 尝试从缓存中解析帧（32 字节固定帧长）
+                while len(rx_buf) >= SERIAL_FRAME_LEN:
+                    # 找帧头 0xAA 0x55
+                    sof_idx = rx_buf.find(bytes([SERIAL_SOF0, SERIAL_SOF1]))
+                    if sof_idx < 0:
+                        rx_buf = b""
+                        break
+
+                    if sof_idx > 0:
+                        rx_buf = rx_buf[sof_idx:]
+                        continue
+
+                    if len(rx_buf) < SERIAL_FRAME_LEN:
+                        break
+
+                    frame = rx_buf[:SERIAL_FRAME_LEN]
+
+                    # CRC16 校验（从 CmdType 到保留末尾）
+                    recv_crc = frame[-2] | (frame[-1] << 8)
+                    calc_crc = calc_crc16(frame[2:-2])  # 从 CmdType 到保留末尾
+                    if recv_crc != calc_crc:
+                        print("[CRC] CRC16 校验错误，丢弃")
+                        rx_buf = rx_buf[1:]
+                        continue
+
+                    cmd_type = frame[2]
+                    pay_len = frame[3]
+                    data = frame[SERIAL_HEADER_LEN:SERIAL_HEADER_LEN + pay_len]
+
+                    # 任何有效帧都刷新心跳计时
+                    self.dtu_connected = True
+                    last_rx = time.time()
+
+                    if cmd_type == CMD_STATUS and len(data) >= 2:
+                        mask = (data[0] << 8) | data[1]
+                        for i, name in enumerate(MODULE_IDS):
+                            self.module_statuses[name] = bool(mask & (1 << i))
+                        rx_count += 1
+                        if rx_count % 10 == 0:
+                            print(f"[STATUS] 第{rx_count}次状态, 模块在线: {sum(1 for v in self.module_statuses.values() if v)}")
+
+                    rx_buf = rx_buf[SERIAL_FRAME_LEN:]
+
             except serial.SerialException:
                 self.dtu_connected = False; time.sleep(0.5)
-            except Exception: pass
+            except Exception:
+                pass
         self.dtu_connected = False
 
     def update_speed(self):

@@ -143,6 +143,7 @@ private:
         if (server_fd_ == -1) return false;
         int opt = 1;
         setsockopt(server_fd_, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+        setsockopt(server_fd_, SOL_SOCKET, SO_REUSEPORT, &opt, sizeof(opt));
 
         sockaddr_in addr{};
         addr.sin_family = AF_INET;
@@ -243,7 +244,10 @@ private:
 int main(int argc, char* argv[])
 {
     rclcpp::init(argc, argv);
-    rclcpp::spin(std::make_shared<CameraStreamer>("camera_streamer_node"));
+
+    // 确保退出时关闭监听端口，防止下次启动绑定失败
+    auto node = std::make_shared<CameraStreamer>("camera_streamer_node");
+    rclcpp::spin(node);
     rclcpp::shutdown();
     return 0;
 }

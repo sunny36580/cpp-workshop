@@ -31,9 +31,11 @@ public:
     {
         this->declare_parameter<std::string>("image_topic", "/camera1/image_raw");
         this->declare_parameter<int>("port", 8888);
+        this->declare_parameter<int>("bitrate", 8000);
 
         image_topic_ = this->get_parameter("image_topic").as_string();
         port_        = this->get_parameter("port").as_int();
+        bitrate_kbps_ = this->get_parameter("bitrate").as_int();
 
         heartbeat_pub_ = this->create_publisher<std_msgs::msg::Bool>("/camera/status", 10);
         heartbeat_timer_ = this->create_wall_timer(
@@ -84,6 +86,7 @@ private:
         enc_ctx_ = avcodec_alloc_context3(codec);
         enc_ctx_->width = enc_width_;
         enc_ctx_->height = enc_height_;
+        enc_ctx_->bit_rate = bitrate_kbps_ * 1000;
         enc_ctx_->time_base = {1, 30};
         enc_ctx_->framerate = {30, 1};
         enc_ctx_->pix_fmt = AV_PIX_FMT_YUV420P;
@@ -91,6 +94,8 @@ private:
         enc_ctx_->max_b_frames = 0;
         av_opt_set(enc_ctx_->priv_data, "preset", "ultrafast", 0);
         av_opt_set(enc_ctx_->priv_data, "tune", "zerolatency", 0);
+        // 不限制码率时 libx264 会激进地使用高码率保质量
+        // 设置 bitrate 参数后可控制输出带宽，默认 4000kbps = 4Mbps
         avcodec_open2(enc_ctx_, codec, nullptr);
 
         enc_frame_ = av_frame_alloc();
@@ -196,6 +201,7 @@ private:
 
             bool first_frame = true;
             int frame_count = 0;
+            int64_t last_frame_ts = 0;  // 记录最新帧的时间戳，检测相机源是否还活着
 
             // 设置 recv/send 超时
             struct timeval tv;
@@ -203,6 +209,16 @@ private:
             tv.tv_usec = 500000; // 500ms
             setsockopt(client_fd_, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
             setsockopt(client_fd_, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+
+            // 启用 TCP keepalive，让对端断开时能快速检测到
+            int keepalive = 1;
+            setsockopt(client_fd_, SOL_SOCKET, SO_KEEPALIVE, &keepalive, sizeof(keepalive));
+            int keepidle = 3;     // 3 秒无数据后开始探测
+            int keepintvl = 1;    // 探测间隔 1 秒
+            int keepcnt = 3;      // 连续 3 次失败认为断开
+            setsockopt(client_fd_, SOL_TCP, TCP_KEEPIDLE, &keepidle, sizeof(keepidle));
+            setsockopt(client_fd_, SOL_TCP, TCP_KEEPINTVL, &keepintvl, sizeof(keepintvl));
+            setsockopt(client_fd_, SOL_TCP, TCP_KEEPCNT, &keepcnt, sizeof(keepcnt));
 
             while (running_ && rclcpp::ok()) {
                 {
@@ -214,6 +230,17 @@ private:
                     }
                 }
 
+                // 检测相机源是否还活着：如果 3 秒内没有收到新图像，主动断开让客户端重连
+                int64_t now = this->now().nanoseconds();
+                if (!latest_frame_.empty() && last_frame_ts > 0 &&
+                    (now - last_frame_ts) > 3 * 1000000000LL) {
+                    RCLCPP_WARN(this->get_logger(), "相机源超时（>3s 无新帧），主动断开");
+                    break;
+                }
+                if (!latest_frame_.empty()) {
+                    last_frame_ts = now;
+                }
+
                 enc_buf.clear();
                 if (encoder_ready_) {
                     // 每 60 帧（约 2 秒）强制插入关键帧，防止解码器累积错误
@@ -223,6 +250,12 @@ private:
                         continue;
                     }
                     first_frame = false;
+
+                    // 日志：每 300 帧（~10 秒）打印一次发送状态
+                    if (frame_count % 300 == 0) {
+                        RCLCPP_INFO(this->get_logger(), "推流中: frame=%d, size=%zu, force_key=%d",
+                                    frame_count, enc_buf.size(), force_key);
+                    }
                 } else {
                     continue;
                 }
@@ -242,6 +275,7 @@ private:
 
     std::string image_topic_;
     int port_;
+    int bitrate_kbps_;
     int server_fd_ = -1, client_fd_ = -1;
     std::thread stream_thread_;
     std::atomic<bool> running_ = true;

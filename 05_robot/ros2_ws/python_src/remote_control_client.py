@@ -160,6 +160,8 @@ class RobotRemote:
         self.camera_thread = None
         self.camera_running = False
         self.camera_frame_lock = threading.Lock()  # 保护 camera_frame
+        self.camera_last_frame_time = 0  # 上次收到新帧的时间戳
+        self.camera_frame_count = 0      # 收到的总帧数
 
         # ========== 界面布局 ==========
         # 主任务配置
@@ -407,7 +409,7 @@ class RobotRemote:
             sock = None
             try:
                 sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                sock.settimeout(5.0)
+                sock.settimeout(2.0)  # 2 秒超时，更快检测断开
                 sock.connect((CAMERA_IP, CAMERA_PORT))
                 self.last_tip = "相机已连接"
                 self.add_log("TCP 相机已连接", "success")
@@ -424,34 +426,52 @@ class RobotRemote:
 
                 while self.camera_running and self.camera_playing:
                     # 读4字节数据长度
-                    len_data = sock.recv(4)
+                    try:
+                        len_data = sock.recv(4)
+                    except socket.timeout:
+                        self.add_log("相机接收超时，主动断开重连", "warning")
+                        break
                     if not len_data:
+                        print("[CAM] recv(4) returned empty, connection closed")
                         break
                     length = int.from_bytes(len_data, 'big')
                     if length > 500000:
-                        continue
+                        print(f"[CAM] length too large: {length}, 帧边界错位，断开重连")
+                        break
 
                     # 读完整 H.264 数据
                     data = b''
                     while len(data) < length:
                         packet = sock.recv(length - len(data))
                         if not packet:
+                            print(f"[CAM] recv payload failed at {len(data)}/{length}")
                             break
                         data += packet
 
                     if len(data) != length:
+                        print(f"[CAM] payload incomplete: got {len(data)}/{length}")
                         break
 
                     # 用 PyAV 解码 H.264 ES
+                    frame_received = False
                     try:
                         frames = codec.decode(av.Packet(data))
                         for frame in frames:
+                            frame_received = True
                             img = frame.to_ndarray(format='bgr24')
                             raw = pygame.image.frombuffer(img.tobytes(), (img.shape[1], img.shape[0]), "BGR")
                             with self.camera_frame_lock:
                                 self.camera_frame = raw
-                    except Exception:
-                        pass  # EAGAIN: need more data
+                    except Exception as e:
+                        print(f"[CAM] decode error: {e}")
+                        pass
+
+                    if not frame_received:
+                        # 连续收不到帧说明解码器卡死了，主动断开让外层重连
+                        print(f"[CAM] no frame decoded from {length} bytes, 解码器可能卡死，断开重连")
+                        break
+                    else:
+                        pass  # 正常收到帧
 
             except socket.timeout:
                 self.last_tip = "相机连接超时"
@@ -472,14 +492,10 @@ class RobotRemote:
                     except:
                         pass
 
-            # 如果还处在播放状态，等待几秒后自动重连
+            # 立即重连，不等待
             if self.camera_running and self.camera_playing:
-                # self.add_log("相机断开，3 秒后自动重连...", "warning")
-                print("📷 相机断开，3 秒后自动重连...")
-                for _ in range(2):  # 最多等 3 秒，每秒检测是否被停止
-                    if not self.camera_running or not self.camera_playing:
-                        break
-                    time.sleep(0.1)
+                print("📷 相机断开，立即重连...")
+                # 不等待，直接进入外层循环重试
             else:
                 break
 

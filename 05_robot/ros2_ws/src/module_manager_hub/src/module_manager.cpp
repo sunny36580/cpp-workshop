@@ -585,7 +585,7 @@ void ModuleManager::execScriptTask(const std::string &name)
 void ModuleManager::interpolateSpeedLoop()
 {
   rclcpp::Rate rate(SPEED_INTERPOLATE_HZ);
-  constexpr double dt = 0.02;  // 50Hz 固定步长
+  constexpr double dt = 0.0125;  // 50Hz 固定步长
 
   while (rclcpp::ok() && speed_running_) {
 

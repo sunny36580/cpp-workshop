@@ -51,10 +51,10 @@ class CmdType(Enum):
 
 # ====================== 10个预设任务定义 ======================
 TASK_LIST = {
-    1: "握手程序",
-    2: "语音交互模式",
-    3: "黄梅戏剧本",
-    4: "原地旋转180度",
+    1: "语音动作组",
+    2: "握手交互",
+    3: "语音交互",
+    4: "待机模式",
     5: "手指动作能力展示",
     6: "挥手动作",
     7: "表情头能力展示",
@@ -296,7 +296,7 @@ class RobotRemote:
                             self.module_statuses[name] = bool(mask & (1 << i))
                         rx_count += 1
                         if rx_count % 10 == 0:
-                            print(f"[STATUS] 第{rx_count}次状态, 模块在线: {sum(1 for v in self.module_statuses.values() if v)}")
+                            pass
 
                     rx_buf = rx_buf[SERIAL_FRAME_LEN:]
 
@@ -402,74 +402,86 @@ class RobotRemote:
         self.last_tip = "相机已暂停"
 
     def camera_loop(self):
-        """相机接收线程：TCP → H.264 → pygame 解码"""
-        sock = None
-        try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(5.0)
-            sock.connect((CAMERA_IP, CAMERA_PORT))
-            self.last_tip = "相机已连接"
-            print("✅ TCP 相机已连接")
-
-            # 用 Python 的 av 库来解码
+        """相机接收线程：TCP → H.264 → pygame 解码（带自动重连）"""
+        while self.camera_running and self.camera_playing:
+            sock = None
             try:
-                import av
-                codec = av.CodecContext.create('h264', 'r')
-            except ImportError:
-                print("⚠ 需要安装 av 库: pip install av")
-                raise
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(5.0)
+                sock.connect((CAMERA_IP, CAMERA_PORT))
+                self.last_tip = "相机已连接"
+                self.add_log("TCP 相机已连接", "success")
+                print("✅ TCP 相机已连接")
 
-            while self.camera_running:
-                # 读4字节数据长度
-                len_data = sock.recv(4)
-                if not len_data:
-                    break
-                length = int.from_bytes(len_data, 'big')
-                if length > 500000:
-                    continue
+                # 用 Python 的 av 库来解码
+                try:
+                    import av
+                    codec = av.CodecContext.create('h264', 'r')
+                except ImportError:
+                    self.add_log("需要安装 av 库: pip install av", "error")
+                    print("⚠ 需要安装 av 库: pip install av")
+                    raise
 
-                # 读完整 H.264 数据
-                data = b''
-                while len(data) < length:
-                    packet = sock.recv(length - len(data))
-                    if not packet:
+                while self.camera_running and self.camera_playing:
+                    # 读4字节数据长度
+                    len_data = sock.recv(4)
+                    if not len_data:
                         break
-                    data += packet
+                    length = int.from_bytes(len_data, 'big')
+                    if length > 500000:
+                        continue
 
-                if len(data) != length:
-                    break
+                    # 读完整 H.264 数据
+                    data = b''
+                    while len(data) < length:
+                        packet = sock.recv(length - len(data))
+                        if not packet:
+                            break
+                        data += packet
 
-                # 用 PyAV 解码 H.264 ES
-                try:
-                    frames = codec.decode(av.Packet(data))
-                    for frame in frames:
-                        img = frame.to_ndarray(format='bgr24')
-                        # 直接转 pygame surface，640x480 无需额外缩放
-                        raw = pygame.image.frombuffer(img.tobytes(), (img.shape[1], img.shape[0]), "BGR")
-                        with self.camera_frame_lock:
-                            self.camera_frame = raw
-                except Exception:
-                    pass  # EAGAIN: need more data
+                    if len(data) != length:
+                        break
 
-        except socket.timeout:
-            self.last_tip = "相机连接超时"
-            print("❌ 相机连接超时")
-        except ConnectionRefusedError:
-            self.last_tip = "相机服务未启动"
-            print("❌ 相机服务未启动")
-        except Exception as e:
-            self.last_tip = f"相机错误: {str(e)[:30]}"
-            print(f"❌ 相机错误: {e}")
-        finally:
-            if sock:
-                try:
-                    sock.close()
-                except:
-                    pass
-            self.camera_running = False
-            self.camera_active = False
-            self.camera_playing = False
-            print("📷 相机已断开")
+                    # 用 PyAV 解码 H.264 ES
+                    try:
+                        frames = codec.decode(av.Packet(data))
+                        for frame in frames:
+                            img = frame.to_ndarray(format='bgr24')
+                            raw = pygame.image.frombuffer(img.tobytes(), (img.shape[1], img.shape[0]), "BGR")
+                            with self.camera_frame_lock:
+                                self.camera_frame = raw
+                    except Exception:
+                        pass  # EAGAIN: need more data
+
+            except socket.timeout:
+                self.last_tip = "相机连接超时"
+                print("❌ 相机连接超时")
+            except ConnectionRefusedError:
+                self.last_tip = "相机服务未启动"
+                print("❌ 相机服务未启动")
+            except (OSError, BrokenPipeError) as e:
+                self.last_tip = f"相机断开: {str(e)[:20]}"
+                print(f"❌ 相机断开: {e}")
+            except Exception as e:
+                self.last_tip = f"相机错误: {str(e)[:30]}"
+                print(f"❌ 相机错误: {e}")
+            finally:
+                if sock:
+                    try:
+                        sock.close()
+                    except:
+                        pass
+
+            # 如果还处在播放状态，等待几秒后自动重连
+            if self.camera_running and self.camera_playing:
+                # self.add_log("相机断开，3 秒后自动重连...", "warning")
+                print("📷 相机断开，3 秒后自动重连...")
+                for _ in range(2):  # 最多等 3 秒，每秒检测是否被停止
+                    if not self.camera_running or not self.camera_playing:
+                        break
+                    time.sleep(0.1)
+            else:
+                break
 
     def send_stop_cmd(self):
         """发送紧急停止指令：
@@ -518,6 +530,13 @@ class RobotRemote:
                 self.sub_task_states[sid] = new_state
                 if new_state:
                     self.add_log(f"已开启子任务: {sub_name}", "success")
+                    # # 子任务开启时发送对应预设任务指令
+                    # task_id = self.current_main_task + 1  # 1-4 对应 TASK_LIST
+                    # if not self.task_sent:
+                    #     self.last_tip = f"执行任务: {TASK_LIST[task_id]}"
+                    #     self.task_retry_count = self.task_retry_max
+                    #     self.task_retry_num = task_id
+                    #     self.task_sent = True
                 else:
                     self.add_log(f"已关闭子任务: {sub_name}", "info")
                 return
@@ -776,24 +795,34 @@ class RobotRemote:
                     running = False
 
                 if event.type == pygame.KEYDOWN:
-                    # 数字键1-4：切换主任务
+                    # 数字键1-4：切换主任务 + 同时发送预设任务指令
                     if pygame.K_1 <= event.key <= pygame.K_4:
                         idx = event.key - pygame.K_1
                         if idx < len(self.main_tasks):
                             self.current_main_task = idx
                             self.add_log(f"切换到主任务: {self.main_tasks[idx]['name']}", "info")
+                        # 数字键1-4同时作为预设任务发送
+                        num = event.key - pygame.K_0
+                        if not self.task_sent:
+                            self.last_tip = f"执行任务: {TASK_LIST[num]}"
+                            self.add_log(f"执行预设任务 {num}: {TASK_LIST[num]}", "info")
+                            self.task_retry_count = self.task_retry_max
+                            self.task_retry_num = num
+                            self.task_sent = True
 
-                    # 数字键5-0：预设任务
+                    # 数字键5-9：预设任务
                     elif pygame.K_5 <= event.key <= pygame.K_9:
                         num = event.key - pygame.K_0
                         if not self.task_sent:
                             self.last_tip = f"执行任务: {TASK_LIST[num]}"
+                            self.add_log(f"执行预设任务 {num}: {TASK_LIST[num]}", "info")
                             self.task_retry_count = self.task_retry_max
                             self.task_retry_num = num
                             self.task_sent = True
                     elif event.key == pygame.K_0:
                         if not self.task_sent:
                             self.last_tip = f"执行任务: {TASK_LIST[10]}"
+                            self.add_log(f"执行预设任务 10: {TASK_LIST[10]}", "info")
                             self.task_retry_count = self.task_retry_max
                             self.task_retry_num = 10
                             self.task_sent = True
@@ -816,7 +845,7 @@ class RobotRemote:
 
                 # 按键抬起，解除防抖 + 立即停止重发
                 if event.type == pygame.KEYUP:
-                    if pygame.K_5 <= event.key <= pygame.K_9 or event.key == pygame.K_0:
+                    if pygame.K_1 <= event.key <= pygame.K_9 or event.key == pygame.K_0:
                         self.task_sent = False
                         self.task_retry_count = 0
                     if event.key == pygame.K_SPACE:

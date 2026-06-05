@@ -162,6 +162,8 @@ class RobotRemote:
         self.camera_frame_lock = threading.Lock()  # 保护 camera_frame
         self.camera_last_frame_time = 0  # 上次收到新帧的时间戳
         self.camera_frame_count = 0      # 收到的总帧数
+        self.camera_fps_log_time = 0     # 上次fps日志时间
+        self.camera_fps_frame_count = 0  # fps统计帧数
 
         # ========== 界面布局 ==========
         # 主任务配置
@@ -462,6 +464,15 @@ class RobotRemote:
                             raw = pygame.image.frombuffer(img.tobytes(), (img.shape[1], img.shape[0]), "BGR")
                             with self.camera_frame_lock:
                                 self.camera_frame = raw
+                            # FPS 统计（每 300 帧打印一次）
+                            self.camera_frame_count += 1
+                            self.camera_fps_frame_count += 1
+                            now = time.time()
+                            if now - self.camera_fps_log_time >= 10.0:
+                                actual_fps = self.camera_fps_frame_count / (now - self.camera_fps_log_time)
+                                print(f"[CAM] 实际接收帧率: {actual_fps:.1f} fps, 总帧数: {self.camera_frame_count}")
+                                self.camera_fps_log_time = now
+                                self.camera_fps_frame_count = 0
                     except Exception as e:
                         print(f"[CAM] decode error: {e}")
                         pass

@@ -13,6 +13,7 @@
 #include <atomic>
 #include <mutex>
 #include <sys/poll.h>
+#include <signal.h>
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -31,7 +32,7 @@ public:
     {
         this->declare_parameter<std::string>("image_topic", "/camera1/image_raw");
         this->declare_parameter<int>("port", 8888);
-        this->declare_parameter<int>("bitrate", 8000);
+        this->declare_parameter<int>("bitrate", 2000);
 
         image_topic_ = this->get_parameter("image_topic").as_string();
         port_        = this->get_parameter("port").as_int();
@@ -87,11 +88,11 @@ private:
         enc_ctx_->width = enc_width_;
         enc_ctx_->height = enc_height_;
         enc_ctx_->bit_rate = bitrate_kbps_ * 1000;
-        enc_ctx_->time_base = {1, 30};
-        enc_ctx_->framerate = {30, 1};
+        enc_ctx_->time_base = {1, 20};
+        enc_ctx_->framerate = {20, 1};
         enc_ctx_->pix_fmt = AV_PIX_FMT_YUV420P;
-        enc_ctx_->gop_size = 30;
-        enc_ctx_->max_b_frames = 0;
+        enc_ctx_->gop_size = 20;       // 每秒一个关键帧
+        enc_ctx_->max_b_frames = 0;     // 无 B 帧，降低解码复杂度
         av_opt_set(enc_ctx_->priv_data, "preset", "ultrafast", 0);
         av_opt_set(enc_ctx_->priv_data, "tune", "zerolatency", 0);
         // 不限制码率时 libx264 会激进地使用高码率保质量
@@ -182,6 +183,9 @@ private:
         cv::Mat frame;
         std::vector<uint8_t> enc_buf;
 
+        RCLCPP_INFO(this->get_logger(), "推流线程启动: target_fps=%d/%d, bitrate=%dkbps",
+                    enc_ctx_->framerate.num, enc_ctx_->framerate.den, bitrate_kbps_);
+
         // 设置 accept 超时，让 Ctrl+C 能快速退出
         int timeout_ms = 1000; // 1秒超时
         setsockopt(server_fd_, SOL_SOCKET, SO_RCVTIMEO, &timeout_ms, sizeof(timeout_ms));
@@ -202,6 +206,11 @@ private:
             bool first_frame = true;
             int frame_count = 0;
             int64_t last_frame_ts = 0;  // 记录最新帧的时间戳，检测相机源是否还活着
+            int64_t last_log_ts = 0;    // 上次日志时间
+            int encode_count = 0;       // 实际编码帧数（用于统计实际帧率）
+            int64_t last_send_ts = 0;   // 上次发送时间戳
+            int64_t encode_total_us = 0;  // 累计编码耗时（微秒）
+            int64_t send_total_us = 0;    // 累计发送耗时（微秒）
 
             // 设置 recv/send 超时
             struct timeval tv;
@@ -243,31 +252,71 @@ private:
 
                 enc_buf.clear();
                 if (encoder_ready_) {
-                    // 每 60 帧（约 2 秒）强制插入关键帧，防止解码器累积错误
-                    bool force_key = first_frame || (++frame_count % 60 == 0);
+                    auto encode_start = std::chrono::steady_clock::now();
+
+                    // 每 20 帧（约 1 秒）强制插入关键帧，防止解码器累积错误
+                    bool force_key = first_frame || (++frame_count % 20 == 0);
                     if (!encodeFrame(frame, enc_buf, force_key)) {
                         std::this_thread::sleep_for(10ms);
                         continue;
                     }
                     first_frame = false;
+                    encode_count++;
 
-                    // 日志：每 300 帧（~10 秒）打印一次发送状态
+                    auto encode_end = std::chrono::steady_clock::now();
+                    int64_t encode_us = std::chrono::duration_cast<std::chrono::microseconds>(
+                        encode_end - encode_start).count();
+                    encode_total_us += encode_us;
+
+                    // 日志：每 300 帧（~15 秒）打印一次发送状态和实际帧率
                     if (frame_count % 300 == 0) {
-                        RCLCPP_INFO(this->get_logger(), "推流中: frame=%d, size=%zu, force_key=%d",
-                                    frame_count, enc_buf.size(), force_key);
+                        int64_t now_ms = this->now().nanoseconds() / 1000000;
+                        double avg_encode_us = (double)encode_total_us / encode_count;
+                        if (last_log_ts > 0) {
+                            double elapsed_s = (now_ms - last_log_ts) / 1000.0;
+                            double actual_fps = encode_count / elapsed_s;
+                            double avg_send_us = (double)send_total_us / encode_count;
+                            RCLCPP_INFO(this->get_logger(),
+                                "推流: frame=%d, encode_avg=%.0fus, send_avg=%.0fus, fps=%.1f",
+                                frame_count, avg_encode_us, avg_send_us, actual_fps);
+                        } else {
+                            RCLCPP_INFO(this->get_logger(),
+                                "推流: frame=%d, encode_avg=%.0fus",
+                                frame_count, avg_encode_us);
+                        }
+                        last_log_ts = now_ms;
+                        encode_count = 0;
+                        encode_total_us = 0;
+                        send_total_us = 0;
                     }
                 } else {
                     continue;
                 }
 
                 // 用网络序（大端）发送长度，与 Python 端 int.from_bytes(..., 'big') 一致
+                auto send_start = std::chrono::steady_clock::now();
                 uint32_t size_net = htonl((uint32_t)enc_buf.size());
                 if (send(client_fd_, &size_net, 4, 0) <= 0 ||
                     send(client_fd_, enc_buf.data(), enc_buf.size(), 0) <= 0) {
                     RCLCPP_WARN(this->get_logger(), "客户端断开");
                     break;
                 }
-                std::this_thread::sleep_for(10ms);
+                auto send_end = std::chrono::steady_clock::now();
+                send_total_us += std::chrono::duration_cast<std::chrono::microseconds>(
+                    send_end - send_start).count();
+
+                // 精确帧率控制：用时间戳而非固定 sleep
+                // 目标帧率由 enc_ctx_->framerate 决定（当前 20fps → 每帧 50ms）
+                int64_t target_interval_ns = 1000000000LL / 20;  // 50ms
+                int64_t now_send = this->now().nanoseconds();
+                if (last_send_ts > 0) {
+                    int64_t elapsed = now_send - last_send_ts;
+                    if (elapsed < target_interval_ns) {
+                        std::this_thread::sleep_for(
+                            std::chrono::nanoseconds(target_interval_ns - elapsed));
+                    }
+                }
+                last_send_ts = this->now().nanoseconds();
             }
             if (client_fd_ > 0) { close(client_fd_); client_fd_ = -1; }
         }
@@ -299,6 +348,9 @@ private:
 int main(int argc, char* argv[])
 {
     rclcpp::init(argc, argv);
+
+    // 忽略 SIGPIPE，防止 send() 写入已关闭的 socket 时导致进程被杀死
+    signal(SIGPIPE, SIG_IGN);
 
     // 确保退出时关闭监听端口，防止下次启动绑定失败
     auto node = std::make_shared<CameraStreamer>("camera_streamer_node");

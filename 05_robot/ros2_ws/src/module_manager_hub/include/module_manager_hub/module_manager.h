@@ -123,7 +123,7 @@ private:
   double last_task_cmd_time_ = 0.0;
 
   // ========== 速度插值（50Hz 平滑输出 cmd_vel） ==========
-  static constexpr double SPEED_INTERPOLATE_HZ = 50.0;   // 输出频率
+  static constexpr double SPEED_INTERPOLATE_HZ = 80.0;   // 输出频率
   static constexpr double LINEAR_ACCEL  = 0.2;            // 线加速度 m/s²
   static constexpr double ANGULAR_ACCEL = 0.3;            // 角加速度 rad/s²
   static constexpr double LINEAR_MAX    = 0.6;            // 线速度上限 m/s

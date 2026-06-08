@@ -32,7 +32,7 @@ public:
     {
         this->declare_parameter<std::string>("image_topic", "/camera1/image_raw");
         this->declare_parameter<int>("port", 8888);
-        this->declare_parameter<int>("bitrate", 2000);
+        this->declare_parameter<int>("bitrate", 3000);
 
         image_topic_ = this->get_parameter("image_topic").as_string();
         port_        = this->get_parameter("port").as_int();
@@ -93,10 +93,10 @@ private:
         enc_ctx_->pix_fmt = AV_PIX_FMT_YUV420P;
         enc_ctx_->gop_size = 20;       // 每秒一个关键帧
         enc_ctx_->max_b_frames = 0;     // 无 B 帧，降低解码复杂度
-        av_opt_set(enc_ctx_->priv_data, "preset", "ultrafast", 0);
+        av_opt_set(enc_ctx_->priv_data, "preset", "veryfast", 0);
         av_opt_set(enc_ctx_->priv_data, "tune", "zerolatency", 0);
-        // 不限制码率时 libx264 会激进地使用高码率保质量
-        // 设置 bitrate 参数后可控制输出带宽，默认 4000kbps = 4Mbps
+        // bitrate 默认 2000kbps（640x480@20fps 够用），可在启动时调大
+        // preset=veryfast 比 ultrafast 压缩效率更好，同码率画质明显提升
         avcodec_open2(enc_ctx_, codec, nullptr);
 
         enc_frame_ = av_frame_alloc();

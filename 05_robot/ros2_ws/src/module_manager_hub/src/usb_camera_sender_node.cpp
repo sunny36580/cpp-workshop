@@ -88,6 +88,8 @@ private:
         enc_ctx_->width = enc_width_;
         enc_ctx_->height = enc_height_;
         enc_ctx_->bit_rate = bitrate_kbps_ * 1000;
+        enc_ctx_->rc_max_rate = (bitrate_kbps_ * 1000) * 2;   // 峰值允许 2 倍，运动时码率能冲上去保证帧率
+        enc_ctx_->rc_buffer_size = (bitrate_kbps_ * 1000) / 20;  // 一帧的预算
         enc_ctx_->time_base = {1, 20};
         enc_ctx_->framerate = {20, 1};
         enc_ctx_->pix_fmt = AV_PIX_FMT_YUV420P;
@@ -95,8 +97,13 @@ private:
         enc_ctx_->max_b_frames = 0;     // 无 B 帧，降低解码复杂度
         av_opt_set(enc_ctx_->priv_data, "preset", "veryfast", 0);
         av_opt_set(enc_ctx_->priv_data, "tune", "zerolatency", 0);
-        // bitrate 默认 2000kbps（640x480@20fps 够用），可在启动时调大
-        // preset=veryfast 比 ultrafast 压缩效率更好，同码率画质明显提升
+        av_opt_set(enc_ctx_->priv_data, "profile", "baseline", 0);  // baseline 编码耗时最低
+        av_opt_set(enc_ctx_->priv_data, "me", "dia", 0);       // 运动搜索用 dia（最快）
+        av_opt_set(enc_ctx_->priv_data, "subq", "1", 0);       // 亚像素精度最低（最快）
+        av_opt_set(enc_ctx_->priv_data, "trellis", "0", 0);    // 关闭 trellis 量化
+        av_opt_set(enc_ctx_->priv_data, "no_dct_decimate", "1", 0); // 跳过 DCT 精简
+        av_opt_set(enc_ctx_->priv_data, "fast_pskip", "1", 0); // 快速跳过宏块检测
+        // rc_max_rate 允许 2 倍峰值，运动时不压码率保证帧率稳定
         avcodec_open2(enc_ctx_, codec, nullptr);
 
         enc_frame_ = av_frame_alloc();
@@ -211,6 +218,9 @@ private:
             int64_t last_send_ts = 0;   // 上次发送时间戳
             int64_t encode_total_us = 0;  // 累计编码耗时（微秒）
             int64_t send_total_us = 0;    // 累计发送耗时（微秒）
+            int64_t max_encode_us = 0;    // 单帧最大编码耗时
+            int64_t max_send_us = 0;      // 单帧最大发送耗时
+            size_t max_frame_size = 0;    // 单帧最大体积
 
             // 设置 recv/send 超时
             struct timeval tv;
@@ -254,8 +264,8 @@ private:
                 if (encoder_ready_) {
                     auto encode_start = std::chrono::steady_clock::now();
 
-                    // 每 20 帧（约 1 秒）强制插入关键帧，防止解码器累积错误
-                    bool force_key = first_frame || (++frame_count % 20 == 0);
+                    // 每 60 帧（约 3 秒）强制插入关键帧，减少大帧对帧率的冲击
+                    bool force_key = first_frame || (++frame_count % 60 == 0);
                     if (!encodeFrame(frame, enc_buf, force_key)) {
                         std::this_thread::sleep_for(10ms);
                         continue;
@@ -267,9 +277,10 @@ private:
                     int64_t encode_us = std::chrono::duration_cast<std::chrono::microseconds>(
                         encode_end - encode_start).count();
                     encode_total_us += encode_us;
+                    if (encode_us > max_encode_us) max_encode_us = encode_us;
 
-                    // 日志：每 300 帧（~15 秒）打印一次发送状态和实际帧率
-                    if (frame_count % 300 == 0) {
+                    // 日志：每 30 帧（~1.5 秒）打印一次，含单帧最大值
+                    if (frame_count % 30 == 0) {
                         int64_t now_ms = this->now().nanoseconds() / 1000000;
                         double avg_encode_us = (double)encode_total_us / encode_count;
                         if (last_log_ts > 0) {
@@ -277,17 +288,21 @@ private:
                             double actual_fps = encode_count / elapsed_s;
                             double avg_send_us = (double)send_total_us / encode_count;
                             RCLCPP_INFO(this->get_logger(),
-                                "推流: frame=%d, encode_avg=%.0fus, send_avg=%.0fus, fps=%.1f",
-                                frame_count, avg_encode_us, avg_send_us, actual_fps);
+                                "推流: frame=%d, enc_avg=%.0fus, enc_max=%ldus, send_avg=%.0fus, send_max=%ldus, max_size=%zu, fps=%.1f",
+                                frame_count, avg_encode_us, max_encode_us,
+                                avg_send_us, max_send_us, max_frame_size, actual_fps);
                         } else {
                             RCLCPP_INFO(this->get_logger(),
-                                "推流: frame=%d, encode_avg=%.0fus",
-                                frame_count, avg_encode_us);
+                                "推流: frame=%d, enc_avg=%.0fus, enc_max=%ldus, max_size=%zu",
+                                frame_count, avg_encode_us, max_encode_us, max_frame_size);
                         }
                         last_log_ts = now_ms;
                         encode_count = 0;
                         encode_total_us = 0;
                         send_total_us = 0;
+                        max_encode_us = 0;
+                        max_send_us = 0;
+                        max_frame_size = 0;
                     }
                 } else {
                     continue;
@@ -302,8 +317,11 @@ private:
                     break;
                 }
                 auto send_end = std::chrono::steady_clock::now();
-                send_total_us += std::chrono::duration_cast<std::chrono::microseconds>(
+                int64_t send_us = std::chrono::duration_cast<std::chrono::microseconds>(
                     send_end - send_start).count();
+                send_total_us += send_us;
+                if (send_us > max_send_us) max_send_us = send_us;
+                if (enc_buf.size() > max_frame_size) max_frame_size = enc_buf.size();
 
                 // 精确帧率控制：用时间戳而非固定 sleep
                 // 目标帧率由 enc_ctx_->framerate 决定（当前 20fps → 每帧 50ms）

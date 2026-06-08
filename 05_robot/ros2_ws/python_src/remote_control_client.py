@@ -464,10 +464,25 @@ class RobotRemote:
                             raw = pygame.image.frombuffer(img.tobytes(), (img.shape[1], img.shape[0]), "BGR")
                             with self.camera_frame_lock:
                                 self.camera_frame = raw
-                            # FPS 统计（每 300 帧打印一次）
+                            # 每帧耗时统计
+                            now = time.time()
+                            frame_interval = now - self.camera_last_frame_time if self.camera_last_frame_time > 0 else 0
+                            self.camera_last_frame_time = now
                             self.camera_frame_count += 1
                             self.camera_fps_frame_count += 1
-                            now = time.time()
+                            # 记录最大帧间隔
+                            if not hasattr(self, 'camera_max_interval'):
+                                self.camera_max_interval = 0
+                                self.camera_interval_log_time = now
+                                self.camera_interval_frame_count = 0
+                            if frame_interval > self.camera_max_interval:
+                                self.camera_max_interval = frame_interval
+                            self.camera_interval_frame_count += 1
+                            if self.camera_interval_frame_count >= 300:
+                                print(f"[CAM] 最近300帧: 最大帧间隔={self.camera_max_interval*1000:.0f}ms")
+                                self.camera_max_interval = 0
+                                self.camera_interval_frame_count = 0
+                                self.camera_interval_log_time = now
                             if now - self.camera_fps_log_time >= 10.0:
                                 actual_fps = self.camera_fps_frame_count / (now - self.camera_fps_log_time)
                                 print(f"[CAM] 实际接收帧率: {actual_fps:.1f} fps, 总帧数: {self.camera_frame_count}")

@@ -166,9 +166,11 @@ void ModuleManager::loadScriptTasks(const YAML::Node &tasks_node)
     t.name        = entry.first.as<std::string>();
     t.description = entry.second["description"] ? entry.second["description"].as<std::string>() : "";
     t.script_path = entry.second["script"].as<std::string>();
+    t.setup_path  = entry.second["setup_path"] ? entry.second["setup_path"].as<std::string>() : "";
     t.enabled     = entry.second["enabled"] ? entry.second["enabled"].as<bool>() : true;
     script_tasks_[t.name] = t;
-    RCLCPP_INFO(this->get_logger(), "脚本任务注册: %s → %s", t.name.c_str(), t.script_path.c_str());
+    std::string setup_info = t.setup_path.empty() ? "" : (" setup=" + t.setup_path);
+    RCLCPP_INFO(this->get_logger(), "脚本任务注册: %s → %s%s", t.name.c_str(), t.script_path.c_str(), setup_info.c_str());
   }
 }
 
@@ -571,7 +573,13 @@ void ModuleManager::execScriptTask(const std::string &name)
   RCLCPP_INFO(this->get_logger(), "执行脚本任务 %s: %s", name.c_str(), t.script_path.c_str());
   std::thread([this, name]() {
     auto &t = script_tasks_[name];
-    std::string cmd = "bash " + t.script_path;
+    std::string cmd;
+    if (!t.setup_path.empty()) {
+      // 用 . 代替 source（POSIX 兼容），bash -c 确保环境变量生效
+      cmd = "bash -c '. " + t.setup_path + " && " + t.script_path + "'";
+    } else {
+      cmd = "bash " + t.script_path;
+    }
     int ret = system(cmd.c_str());
     RCLCPP_INFO(this->get_logger(), "脚本任务 %s 结束, exit_code=%d", name.c_str(), ret);
   }).detach();

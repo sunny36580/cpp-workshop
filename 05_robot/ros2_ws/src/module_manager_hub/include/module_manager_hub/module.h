@@ -7,11 +7,12 @@ enum class LaunchType {
   ROS2_LAUNCH,     /// ros2 launch <package> <launch_file>
 };
 
-/// 脚本任务配置（UDP task 指令触发执行 .sh）
+/// 脚本任务配置（UDP task 指令触发执行）
 struct ScriptTask {
   std::string name;
   std::string description;
   std::string script_path;     // .sh 脚本路径（绝对路径）
+  std::string setup_path;      // 启动前 source 的 setup.bash 路径（可选）
   bool enabled = false;
 };
 

@@ -21,7 +21,7 @@ CAMERA_PORT = 8888             # TCP 推流端口
 # 串口配置（与 C++ 模块管理器一致）
 # Windows 下 CH340 通常是 COM3，改为: SERIAL_PORT = "COM3"
 # Linux  下 CH340 通常是 /dev/ttyUSB0 或 /dev/ttyCH340USB0
-SERIAL_PORT = "COM3"
+SERIAL_PORT = "/dev/ttyUSB1"
 SERIAL_BAUD = 115200
 
 # 二进制协议常量（32 字节固定帧，与 C++ 端保持一致）
@@ -49,28 +49,62 @@ class CmdType(Enum):
     TASK = 2    # 0x02 预设任务: payload = task_id_u8
     STOP = 3    # 0x03 紧急停止（与机端心跳复用同一数值，但由控制端主动发送）
 
-# ====================== UDP 动作组自定义协议 ======================
-# 通过 UDP 回环（127.0.0.1:9999）发送 play/reset 指令给本地动作组服务
-UDP_ACTION_IP = "127.0.0.1"
-UDP_ACTION_PORT = 9999
+# ====================== UDP 动作组自定义协议（局域网广播 + ACK）======================
+# 通过 UDP 广播发送 play/reset 指令给局域网内的动作组服务
+# ACK 机制：指令带序列号，收方单播回复 ACK，发方超时重发
+UDP_ACTION_IP = "255.255.255.255"   # 局域网广播地址
+UDP_ACTION_PORT = 9999              # 动作组服务端口
 UDP_ACTION_SOF0 = 0xAA
 UDP_ACTION_SOF1 = 0x55
+UDP_ACK_SOF      = 0xBB            # ACK 帧头
+UDP_ACK_TIMEOUT  = 0.3             # ACK 等待超时 (秒)
+UDP_ACK_RETRIES  = 3               # 最大重试次数
 
 class ActionCmdType(Enum):
     """UDP 动作指令类型"""
     PLAY = 1   # 播放动作组
     RESET = 2  # 动作归位
 
-def build_udp_action_frame(action_type: int, payload: bytes = b"") -> bytes:
-    """构建 UDP 动作指令帧:
+# 全局序列号（原子递增，防多线程竞争）
+_udp_seqno = 0
+_udp_seqno_lock = threading.Lock()
+
+def _next_seqno() -> int:
+    global _udp_seqno
+    with _udp_seqno_lock:
+        _udp_seqno = (_udp_seqno + 1) & 0xFFFF
+        return _udp_seqno
+
+def build_udp_action_frame(action_type: int, seqno: int, payload: bytes = b"") -> bytes:
+    """构建带序列号的 UDP 动作指令帧:
        Byte[0-1]: SOF (0xAA, 0x55)
-       Byte[2]:   CmdType (1=PLAY, 2=RESET)
-       Byte[3]:   Payload length
-       Byte[4+]:  Payload
+       Byte[2-3]: SeqNo (大端, 2字节)
+       Byte[4]:   CmdType (1=PLAY, 2=RESET)
+       Byte[5]:   Payload length
+       Byte[6+]:  Payload
+       Byte[-2:]: CRC16
     """
-    frame = bytes([UDP_ACTION_SOF0, UDP_ACTION_SOF1, action_type & 0xFF, len(payload) & 0xFF])
-    frame += payload
+    header = bytes([UDP_ACTION_SOF0, UDP_ACTION_SOF1,
+                    (seqno >> 8) & 0xFF, seqno & 0xFF,
+                    action_type & 0xFF, len(payload) & 0xFF])
+    frame = header + payload
+    crc = calc_crc16(frame)
+    frame += bytes([crc & 0xFF, (crc >> 8) & 0xFF])
     return frame
+
+def parse_udp_ack(frame: bytes) -> tuple[int, int] | None:
+    """解析 ACK 帧，返回 (seqno, status) 或 None"""
+    if len(frame) < 6:
+        return None
+    if frame[0] != UDP_ACK_SOF:
+        return None
+    seqno = (frame[1] << 8) | frame[2]
+    status = frame[3]
+    recv_crc = (frame[4] | (frame[5] << 8)) if len(frame) >= 6 else 0
+    calc_crc = calc_crc16(frame[:4])
+    if recv_crc != calc_crc:
+        return None
+    return (seqno, status)
 
 # ====================== 10个预设任务定义 ======================
 TASK_LIST = {
@@ -353,11 +387,20 @@ class RobotRemote:
         self.add_log("915MHz图传链路已连接")
         self.add_log("机器人处于基础运控就绪状态")
 
-        # ========== UDP 动作组（Play / Reset）==========
+        # ========== UDP 动作组（Play / Reset，局域网广播 + ACK）==========
         self.udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.udp_sock.settimeout(0.5)
+        self.udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        self.udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.udp_sock.bind(("0.0.0.0", 0))      # 随机端口收 ACK
+        self.udp_sock.settimeout(0.3)            # recv 超时 300ms
+        self.udp_sock.setblocking(False)         # 非阻塞，配合 pygame 主循环
         self.action_playing = False   # 是否正在播放动作组
         self.action_resetting = False # 是否正在归位
+        self.ack_waiting = {}          # seqno -> (timeout_time, callback)
+        self.ack_lock = threading.Lock()
+        self.ack_running = True
+        self.ack_thread = threading.Thread(target=self._ack_listen_loop, daemon=True)
+        self.ack_thread.start()
 
         # 虚拟按键尺寸（WASD 控制区在底部中央）
         self.k_size = 56
@@ -708,18 +751,75 @@ class RobotRemote:
         self.linear_vel = 0.0
         self.angular_vel = 0.0
 
-    # -------------------------- UDP 动作指令发送 ----------
-    def send_udp_action_cmd(self, action_type: ActionCmdType):
-        """通过 UDP 回环发送 play/reset 指令到本地 9999 端口"""
-        try:
-            frame = build_udp_action_frame(action_type.value)
-            self.udp_sock.sendto(frame, (UDP_ACTION_IP, UDP_ACTION_PORT))
-            cmd_name = action_type.name
-            self.add_log(f"UDP 动作指令已发送: {cmd_name}", "success")
-            print(f"📤 UDP -> {UDP_ACTION_IP}:{UDP_ACTION_PORT}  [{cmd_name}] {frame.hex()}")
-        except Exception as e:
-            self.add_log(f"UDP 发送失败: {e}", "error")
-            print(f"❌ UDP 发送失败: {e}")
+    # -------------------------- ACK 监听线程 ----------
+    def _ack_listen_loop(self):
+        """后台线程：持续收 ACK，匹配到等待中的 seqno 就标记完成"""
+        while self.ack_running:
+            try:
+                data, addr = self.udp_sock.recvfrom(64)
+                result = parse_udp_ack(data)
+                if result is None:
+                    continue
+                seqno, status = result
+                with self.ack_lock:
+                    if seqno in self.ack_waiting:
+                        cb = self.ack_waiting.pop(seqno)
+                        if cb:
+                            cb(True, status, addr)
+            except socket.timeout:
+                continue
+            except BlockingIOError:
+                time.sleep(0.01)
+                continue
+            except Exception:
+                time.sleep(0.05)
+                continue
+
+    # -------------------------- UDP 动作指令发送（广播 + ACK 重试）----------
+    def send_udp_action_cmd(self, action_type: ActionCmdType,
+                            payload: bytes = b"") -> bool:
+        """通过 UDP 广播发送 play/reset 指令，等待 ACK，超时重试。
+           返回 True 表示收到 ACK 确认，False 表示重试耗尽。
+        """
+        seqno = _next_seqno()
+        frame = build_udp_action_frame(action_type.value, seqno, payload)
+        cmd_name = action_type.name
+
+        ack_received = threading.Event()
+
+        def on_ack(success, status, addr):
+            ack_received.set()
+
+        for attempt in range(1, UDP_ACK_RETRIES + 1):
+            try:
+                # 注册 ACK 等待
+                with self.ack_lock:
+                    self.ack_waiting[seqno] = on_ack
+                # 发送广播
+                self.udp_sock.sendto(frame, (UDP_ACTION_IP, UDP_ACTION_PORT))
+                self.add_log(f"UDP 广播 [{cmd_name}] seq={seqno} 尝试 {attempt}/{UDP_ACK_RETRIES}", "info")
+                print(f"📤 UDP 广播 -> {UDP_ACTION_IP}:{UDP_ACTION_PORT}  [{cmd_name}] seq={seqno} try={attempt}")
+            except Exception as e:
+                self.add_log(f"UDP 发送失败: {e}", "error")
+                with self.ack_lock:
+                    self.ack_waiting.pop(seqno, None)
+                return False
+
+            # 等待 ACK
+            if ack_received.wait(timeout=UDP_ACK_TIMEOUT):
+                with self.ack_lock:
+                    self.ack_waiting.pop(seqno, None)
+                self.add_log(f"✅ 动作指令已确认: {cmd_name}", "success")
+                return True
+
+            # 超时，清理等待，用新 seqno 重试
+            with self.ack_lock:
+                self.ack_waiting.pop(seqno, None)
+            seqno = _next_seqno()
+            frame = build_udp_action_frame(action_type.value, seqno, payload)
+
+        self.add_log(f"⚠️ 动作指令 {cmd_name} 发送失败（{UDP_ACK_RETRIES}次重试均无ACK）", "warning")
+        return False
 
     # -------------------------- 左侧任务面板鼠标点击 ----------
     def _handle_task_click(self, mx, my):
@@ -763,20 +863,17 @@ class RobotRemote:
         for j, sub_name in enumerate(current_main["subs"]):
             rect = pygame.Rect(left_x + 10 + main_w + 6, sub_y, sub_w, 28)
             if rect.collidepoint(mx, my):
-                # ---- 语音动作组子任务 → UDP 协议发送 ----
+                # ---- 语音动作组子任务 → UDP 广播 + ACK ----
                 if is_voice_group:
                     paragraph_num = j + 1  # 语音段落 1-15
-                    payload = bytes([paragraph_num & 0xFF])
-                    frame = build_udp_action_frame(ActionCmdType.PLAY.value, payload)
-                    try:
-                        self.udp_sock.sendto(frame, (UDP_ACTION_IP, UDP_ACTION_PORT))
+                    success = self.send_udp_action_cmd(
+                        ActionCmdType.PLAY, bytes([paragraph_num & 0xFF]))
+                    if success:
                         self.action_playing = True
                         self.action_resetting = False
-                        self.add_log(f"UDP 语音段落 {paragraph_num} 已发送", "success")
                         self.last_tip = f"语音段落 {paragraph_num}"
-                        print(f"📤 UDP -> {UDP_ACTION_IP}:{UDP_ACTION_PORT}  [PLAY para={paragraph_num}] {frame.hex()}")
-                    except Exception as e:
-                        self.add_log(f"UDP 发送失败: {e}", "error")
+                    else:
+                        self.last_tip = f"语音段落 {paragraph_num} 发送失败"
                 else:
                     # ---- 非语音组子任务 → 保持原有点击切换逻辑 ----
                     sid = f"{self.current_main_task}-{j}"
@@ -1198,7 +1295,8 @@ class RobotRemote:
             self.draw_ui()
             clock.tick(60)
 
-        # 退出前关闭相机和串口
+        # 退出前关闭相机、串口和 ACK 线程
+        self.ack_running = False
         self.camera_running = False
         self.camera_playing = False
         self.camera_active = False

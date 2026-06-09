@@ -94,16 +94,16 @@ script_tasks:
     enabled: true
     enabled: false
   task_2:
-    description: "启动机械臂 launch"
-    script: "ros2 launch arm_function arm_hand_launch.py"
-    setup_path: "/home/humanoid02/arm/install/setup.bash"
+    description: "启动握手程序 launch"
+    script: "ros2 launch dual_arm_control sim.launch.py"
+    setup_path: "/home/humanoid/ihr-iii-code_integrated/install/setup.bash"
     enabled: true
     enabled: false
   task_3:
     description: "启动机械臂 launch"
     script: "ros2 launch arm_function arm_hand_launch.py"
     setup_path: "/home/humanoid02/arm/install/setup.bash"
-    enabled: true
+    enabled: true 
     enabled: false
   task_4:
     description: "启动机械臂 launch"

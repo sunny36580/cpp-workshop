@@ -49,6 +49,29 @@ class CmdType(Enum):
     TASK = 2    # 0x02 预设任务: payload = task_id_u8
     STOP = 3    # 0x03 紧急停止（与机端心跳复用同一数值，但由控制端主动发送）
 
+# ====================== UDP 动作组自定义协议 ======================
+# 通过 UDP 回环（127.0.0.1:9999）发送 play/reset 指令给本地动作组服务
+UDP_ACTION_IP = "127.0.0.1"
+UDP_ACTION_PORT = 9999
+UDP_ACTION_SOF0 = 0xAA
+UDP_ACTION_SOF1 = 0x55
+
+class ActionCmdType(Enum):
+    """UDP 动作指令类型"""
+    PLAY = 1   # 播放动作组
+    RESET = 2  # 动作归位
+
+def build_udp_action_frame(action_type: int, payload: bytes = b"") -> bytes:
+    """构建 UDP 动作指令帧:
+       Byte[0-1]: SOF (0xAA, 0x55)
+       Byte[2]:   CmdType (1=PLAY, 2=RESET)
+       Byte[3]:   Payload length
+       Byte[4+]:  Payload
+    """
+    frame = bytes([UDP_ACTION_SOF0, UDP_ACTION_SOF1, action_type & 0xFF, len(payload) & 0xFF])
+    frame += payload
+    return frame
+
 # ====================== 10个预设任务定义 ======================
 TASK_LIST = {
     1: "语音动作组",
@@ -330,6 +353,12 @@ class RobotRemote:
         self.add_log("915MHz图传链路已连接")
         self.add_log("机器人处于基础运控就绪状态")
 
+        # ========== UDP 动作组（Play / Reset）==========
+        self.udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.udp_sock.settimeout(0.5)
+        self.action_playing = False   # 是否正在播放动作组
+        self.action_resetting = False # 是否正在归位
+
         # 虚拟按键尺寸（WASD 控制区在底部中央）
         self.k_size = 56
         self.k_gap = 8
@@ -398,8 +427,7 @@ class RobotRemote:
                     if last_rx > 0 and time.time() - last_rx > 2.5:
                         print("[TIMEOUT] C++ 心跳超时，标记离线")
                         self.dtu_connected = False
-                        for name in self.module_statuses:
-                            self.module_statuses[name] = False
+                        for name in self.module_statuses:4
                         last_rx = 0
                     continue
 
@@ -680,6 +708,19 @@ class RobotRemote:
         self.linear_vel = 0.0
         self.angular_vel = 0.0
 
+    # -------------------------- UDP 动作指令发送 ----------
+    def send_udp_action_cmd(self, action_type: ActionCmdType):
+        """通过 UDP 回环发送 play/reset 指令到本地 9999 端口"""
+        try:
+            frame = build_udp_action_frame(action_type.value)
+            self.udp_sock.sendto(frame, (UDP_ACTION_IP, UDP_ACTION_PORT))
+            cmd_name = action_type.name
+            self.add_log(f"UDP 动作指令已发送: {cmd_name}", "success")
+            print(f"📤 UDP -> {UDP_ACTION_IP}:{UDP_ACTION_PORT}  [{cmd_name}] {frame.hex()}")
+        except Exception as e:
+            self.add_log(f"UDP 发送失败: {e}", "error")
+            print(f"❌ UDP 发送失败: {e}")
+
     # -------------------------- 左侧任务面板鼠标点击 ----------
     def _handle_task_click(self, mx, my):
         panel_y = 72
@@ -694,6 +735,11 @@ class RobotRemote:
         content_y = panel_y + 42
         main_w = int(left_w * 0.4) - 6
         sub_w = left_w - main_w - 16
+        sub_x = left_x + 10 + main_w + 6   # 子任务列左边界
+        btn_w = (sub_w - 10) // 2           # 两按钮平分子任务列宽度
+        btn_h = 32
+        btn_gap = 10
+        voice_group_idx = 0  # "1. 语音动作组" 对应 index 0
 
         # 主任务点击
         main_y = content_y
@@ -705,28 +751,68 @@ class RobotRemote:
                 return
             main_y += 32
 
-        # 子任务点击
+        # 子任务点击（含语音动作组专属按钮和 UDP 发送）
         sub_y = content_y
         current_main = self.main_tasks[self.current_main_task]
+        is_voice_group = (self.current_main_task == voice_group_idx)
+
+        # 语音动作组：子任务区域顶部先放 Play/Reset 按钮
+        if is_voice_group:
+            sub_y += 44  # 按钮区域高度偏移
+
         for j, sub_name in enumerate(current_main["subs"]):
             rect = pygame.Rect(left_x + 10 + main_w + 6, sub_y, sub_w, 28)
             if rect.collidepoint(mx, my):
-                sid = f"{self.current_main_task}-{j}"
-                new_state = not self.sub_task_states.get(sid, False)
-                self.sub_task_states[sid] = new_state
-                if new_state:
-                    self.add_log(f"已开启子任务: {sub_name}", "success")
-                    # # 子任务开启时发送对应预设任务指令
-                    # task_id = self.current_main_task + 1  # 1-4 对应 TASK_LIST
-                    # if not self.task_sent:
-                    #     self.last_tip = f"执行任务: {TASK_LIST[task_id]}"
-                    #     self.task_retry_count = self.task_retry_max
-                    #     self.task_retry_num = task_id
-                    #     self.task_sent = True
+                # ---- 语音动作组子任务 → UDP 协议发送 ----
+                if is_voice_group:
+                    paragraph_num = j + 1  # 语音段落 1-15
+                    payload = bytes([paragraph_num & 0xFF])
+                    frame = build_udp_action_frame(ActionCmdType.PLAY.value, payload)
+                    try:
+                        self.udp_sock.sendto(frame, (UDP_ACTION_IP, UDP_ACTION_PORT))
+                        self.action_playing = True
+                        self.action_resetting = False
+                        self.add_log(f"UDP 语音段落 {paragraph_num} 已发送", "success")
+                        self.last_tip = f"语音段落 {paragraph_num}"
+                        print(f"📤 UDP -> {UDP_ACTION_IP}:{UDP_ACTION_PORT}  [PLAY para={paragraph_num}] {frame.hex()}")
+                    except Exception as e:
+                        self.add_log(f"UDP 发送失败: {e}", "error")
                 else:
-                    self.add_log(f"已关闭子任务: {sub_name}", "info")
+                    # ---- 非语音组子任务 → 保持原有点击切换逻辑 ----
+                    sid = f"{self.current_main_task}-{j}"
+                    new_state = not self.sub_task_states.get(sid, False)
+                    self.sub_task_states[sid] = new_state
+                    if new_state:
+                        self.add_log(f"已开启子任务: {sub_name}", "success")
+                    else:
+                        self.add_log(f"已关闭子任务: {sub_name}", "info")
                 return
             sub_y += 32
+
+        # ---- 语音动作组按钮点击（在子任务区域顶部）----
+        if is_voice_group:
+            btn_y = content_y + 4
+            play_x = sub_x
+            reset_x = sub_x + btn_w + btn_gap
+
+            if pygame.Rect(play_x, btn_y, btn_w, btn_h).collidepoint(mx, my):
+                if not self.action_playing:
+                    self.action_playing = True
+                    self.action_resetting = False
+                    self.send_udp_action_cmd(ActionCmdType.PLAY)
+                    self.add_log("▶️ 动作组播放中...", "success")
+                    self.last_tip = "动作组播放中"
+                else:
+                    self.add_log("动作组已在播放中", "info")
+                return
+
+            if pygame.Rect(reset_x, btn_y, btn_w, btn_h).collidepoint(mx, my):
+                self.action_playing = False
+                self.action_resetting = True
+                self.send_udp_action_cmd(ActionCmdType.RESET)
+                self.add_log("⏹ 动作组已归位", "warning")
+                self.last_tip = "动作归位完成"
+                return
 
     # -------------------------- UI 绘制 --------------------------
     def draw_ui(self):
@@ -776,11 +862,16 @@ class RobotRemote:
     def _draw_task_panel(self, px, py, pw, ph):
         content_y = py + 42
         content_h = ph - 50
-
-        # 主任务列表（左半）
         main_w = int(pw * 0.4) - 6
         sub_w = pw - main_w - 16
+        sub_x = px + 10 + main_w + 6     # 子任务列左边界
+        is_voice_group = (self.current_main_task == 0)  # "1. 语音动作组"
+        voice_group_action_h = 44  # Play/Reset 按钮区域高度
+        btn_w = (sub_w - 10) // 2   # 两按钮平分子任务列宽度
+        btn_h = 32
+        btn_gap = 10
 
+        # ========== 主任务列表（左半）==========
         main_y = content_y
         for i, main in enumerate(self.main_tasks):
             active = (i == self.current_main_task)
@@ -793,20 +884,53 @@ class RobotRemote:
             self.screen.blit(txt, (rect.x + 6, rect.y + 5))
             main_y += 32
 
-        # 子任务列表（右半）
+        # ========== 子任务列表（右半）==========
         sub_y = content_y
         current_main = self.main_tasks[self.current_main_task]
+
+        # 语音动作组：在子任务区域顶部绘制 Play/Reset 按钮
+        if is_voice_group:
+            btn_y = content_y + 4
+            play_x = sub_x
+            reset_x = sub_x + btn_w + btn_gap
+
+            # Play 按钮（与子任务项对齐）
+            play_color = (21, 128, 61) if self.action_playing else (22, 163, 74)
+            play_rect = pygame.Rect(play_x, btn_y, btn_w, btn_h)
+            pygame.draw.rect(self.screen, play_color, play_rect, border_radius=6)
+            if self.action_playing:
+                pygame.draw.rect(self.screen, (74, 222, 128), play_rect, 2, border_radius=6)
+            play_txt = self.font_sm.render("▶ Play", True, (255, 255, 255))
+            self.screen.blit(play_txt, (play_rect.x + 6, play_rect.y + 6))
+
+            # Reset 按钮
+            reset_color = (185, 28, 28) if self.action_resetting else (220, 38, 38)
+            reset_rect = pygame.Rect(reset_x, btn_y, btn_w, btn_h)
+            pygame.draw.rect(self.screen, reset_color, reset_rect, border_radius=6)
+            if self.action_resetting:
+                pygame.draw.rect(self.screen, (252, 165, 165), reset_rect, 2, border_radius=6)
+            reset_txt = self.font_sm.render("⟳ Reset", True, (255, 255, 255))
+            self.screen.blit(reset_txt, (reset_rect.x + 6, reset_rect.y + 6))
+
+            # 按钮下分隔线
+            sep_y = btn_y + btn_h + 4
+            pygame.draw.line(self.screen, (75, 85, 99), (sub_x, sep_y),
+                             (px + pw - 10, sep_y), 1)
+
+            sub_y += voice_group_action_h
+
         for j, sub_name in enumerate(current_main["subs"]):
             sid = f"{self.current_main_task}-{j}"
-            on = self.sub_task_states.get(sid, False)
+            on = self.sub_task_states.get(sid, False) if not is_voice_group else False
             bg = (55, 65, 81)
             rect = pygame.Rect(px + 10 + main_w + 6, sub_y, sub_w, 28)
             pygame.draw.rect(self.screen, bg, rect, border_radius=4)
             txt = self.font_sm.render(sub_name, True, (255, 255, 255))
             self.screen.blit(txt, (rect.x + 6, rect.y + 5))
-            # 状态灯
-            dot_color = (34, 197, 94) if on else (107, 114, 128)
-            pygame.draw.circle(self.screen, dot_color, (rect.right - 10, rect.y + 14), 5)
+            # 语音组段落点击即发 UDP，不显示状态灯；其他任务保持状态灯
+            if not is_voice_group:
+                dot_color = (34, 197, 94) if on else (107, 114, 128)
+                pygame.draw.circle(self.screen, dot_color, (rect.right - 10, rect.y + 14), 5)
             sub_y += 32
 
         # 底部：系统状态

@@ -1,3 +1,4 @@
+import json
 import pygame
 import sys
 import time
@@ -8,6 +9,7 @@ import threading
 import numpy as np
 import io
 from enum import Enum
+import websockets.sync.client
 
 # ====================== 基础配置 ======================
 LINEAR_SPEED_MAX = 0.6   # 运控节点线速度上限 (m/s)
@@ -49,62 +51,22 @@ class CmdType(Enum):
     TASK = 2    # 0x02 预设任务: payload = task_id_u8
     STOP = 3    # 0x03 紧急停止（与机端心跳复用同一数值，但由控制端主动发送）
 
-# ====================== UDP 动作组自定义协议（局域网广播 + ACK）======================
-# 通过 UDP 广播发送 play/reset 指令给局域网内的动作组服务
-# ACK 机制：指令带序列号，收方单播回复 ACK，发方超时重发
-UDP_ACTION_IP = "255.255.255.255"   # 局域网广播地址
-UDP_ACTION_PORT = 9999              # 动作组服务端口
-UDP_ACTION_SOF0 = 0xAA
-UDP_ACTION_SOF1 = 0x55
-UDP_ACK_SOF      = 0xBB            # ACK 帧头
-UDP_ACK_TIMEOUT  = 0.3             # ACK 等待超时 (秒)
-UDP_ACK_RETRIES  = 3               # 最大重试次数
+# ====================== WebSocket 动作组协议（UDP 发现 + WebSocket 通信）==========
+# 1. UDP 广播发现局域网内的动作组服务
+# 2. 拿到服务端 IP 后建立 WebSocket 连接
+# 3. JSON 协议双向通信
+WS_ACTION_PORT = 9998               # WebSocket 服务端口
+WS_DISCOVERY_PORT = 9999            # UDP 发现端口
+WS_DISCOVERY_MSG = b"DISCOVER_ACTION_SERVER"
+WS_DISCOVERY_RESP = b"ACTION_SERVER_HERE"
+WS_DISCOVERY_TIMEOUT = 2.0          # 发现超时 (秒)
+WS_CONNECT_TIMEOUT = 3.0            # WebSocket 连接超时 (秒)
+WS_CMD_TIMEOUT = 3.0                # 指令等待 ACK 超时 (秒)
 
 class ActionCmdType(Enum):
-    """UDP 动作指令类型"""
-    PLAY = 1   # 播放动作组
-    RESET = 2  # 动作归位
-
-# 全局序列号（原子递增，防多线程竞争）
-_udp_seqno = 0
-_udp_seqno_lock = threading.Lock()
-
-def _next_seqno() -> int:
-    global _udp_seqno
-    with _udp_seqno_lock:
-        _udp_seqno = (_udp_seqno + 1) & 0xFFFF
-        return _udp_seqno
-
-def build_udp_action_frame(action_type: int, seqno: int, payload: bytes = b"") -> bytes:
-    """构建带序列号的 UDP 动作指令帧:
-       Byte[0-1]: SOF (0xAA, 0x55)
-       Byte[2-3]: SeqNo (大端, 2字节)
-       Byte[4]:   CmdType (1=PLAY, 2=RESET)
-       Byte[5]:   Payload length
-       Byte[6+]:  Payload
-       Byte[-2:]: CRC16
-    """
-    header = bytes([UDP_ACTION_SOF0, UDP_ACTION_SOF1,
-                    (seqno >> 8) & 0xFF, seqno & 0xFF,
-                    action_type & 0xFF, len(payload) & 0xFF])
-    frame = header + payload
-    crc = calc_crc16(frame)
-    frame += bytes([crc & 0xFF, (crc >> 8) & 0xFF])
-    return frame
-
-def parse_udp_ack(frame: bytes) -> tuple[int, int] | None:
-    """解析 ACK 帧，返回 (seqno, status) 或 None"""
-    if len(frame) < 6:
-        return None
-    if frame[0] != UDP_ACK_SOF:
-        return None
-    seqno = (frame[1] << 8) | frame[2]
-    status = frame[3]
-    recv_crc = (frame[4] | (frame[5] << 8)) if len(frame) >= 6 else 0
-    calc_crc = calc_crc16(frame[:4])
-    if recv_crc != calc_crc:
-        return None
-    return (seqno, status)
+    """WebSocket 动作指令类型"""
+    PLAY = "play"   # 播放动作组
+    RESET = "reset" # 动作归位
 
 # ====================== 10个预设任务定义 ======================
 TASK_LIST = {
@@ -387,20 +349,17 @@ class RobotRemote:
         self.add_log("915MHz图传链路已连接")
         self.add_log("机器人处于基础运控就绪状态")
 
-        # ========== UDP 动作组（Play / Reset，局域网广播 + ACK）==========
-        self.udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-        self.udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.udp_sock.bind(("0.0.0.0", 0))      # 随机端口收 ACK
-        self.udp_sock.settimeout(0.3)            # recv 超时 300ms
-        self.udp_sock.setblocking(False)         # 非阻塞，配合 pygame 主循环
+        # ========== WebSocket 动作组（Play / Reset）==========
+        self.ws = None
+        self.ws_connected = False
+        self.ws_running = True
+        self.ws_lock = threading.Lock()
+        self.ws_ack_event = threading.Event()  # 等待 ACK 信号
         self.action_playing = False   # 是否正在播放动作组
         self.action_resetting = False # 是否正在归位
-        self.ack_waiting = {}          # seqno -> (timeout_time, callback)
-        self.ack_lock = threading.Lock()
-        self.ack_running = True
-        self.ack_thread = threading.Thread(target=self._ack_listen_loop, daemon=True)
-        self.ack_thread.start()
+        # 后台连接 + 接收线程
+        self.ws_connect_retry = True
+        threading.Thread(target=self._ws_connect_loop, daemon=True).start()
 
         # 虚拟按键尺寸（WASD 控制区在底部中央）
         self.k_size = 56
@@ -751,75 +710,140 @@ class RobotRemote:
         self.linear_vel = 0.0
         self.angular_vel = 0.0
 
-    # -------------------------- ACK 监听线程 ----------
-    def _ack_listen_loop(self):
-        """后台线程：持续收 ACK，匹配到等待中的 seqno 就标记完成"""
-        while self.ack_running:
+    # -------------------------- UDP 发现 → WebSocket 连接 ----------
+    def _discover_server(self) -> str | None:
+        """UDP 广播发现局域网内的动作组服务，返回 'ip:port' 或 None"""
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+            sock.settimeout(WS_DISCOVERY_TIMEOUT)
+            sock.bind(("0.0.0.0", 0))
+
+            # 广播发现包
+            sock.sendto(WS_DISCOVERY_MSG, ("255.255.255.255", WS_DISCOVERY_PORT))
+            print(f"🔍 UDP 发现: 广播 {WS_DISCOVERY_MSG} -> 端口 {WS_DISCOVERY_PORT}")
+
+            # 等待回复（可能多个，取第一个）
+            start = time.time()
+            while time.time() - start < WS_DISCOVERY_TIMEOUT:
+                try:
+                    data, addr = sock.recvfrom(256)
+                    if data == WS_DISCOVERY_RESP:
+                        ip = addr[0]
+                        print(f"✅ 发现动作组服务: {ip}")
+                        sock.close()
+                        return f"{ip}:{WS_ACTION_PORT}"
+                except socket.timeout:
+                    break
+
+            sock.close()
+            print("⚠️ UDP 发现超时，未找到动作组服务")
+            return None
+        except Exception as e:
+            print(f"❌ UDP 发现异常: {e}")
+            return None
+
+    # -------------------------- WebSocket 连接 & 接收 ----------
+    def _ws_connect_loop(self):
+        """后台线程：UDP 发现 → WebSocket 连接，断线自动重连"""
+        while self.ws_running:
             try:
-                data, addr = self.udp_sock.recvfrom(64)
-                result = parse_udp_ack(data)
-                if result is None:
+                with self.ws_lock:
+                    if self.ws:
+                        try:
+                            self.ws.close()
+                        except:
+                            pass
+                        self.ws = None
+                    self.ws_connected = False
+
+                # UDP 发现服务端 IP
+                server_addr = self._discover_server()
+                if server_addr is None:
+                    if self.ws_running:
+                        print("⏳ 5s 后重试发现...")
+                        time.sleep(5.0)
                     continue
-                seqno, status = result
-                with self.ack_lock:
-                    if seqno in self.ack_waiting:
-                        cb = self.ack_waiting.pop(seqno)
-                        if cb:
-                            cb(True, status, addr)
-            except socket.timeout:
-                continue
-            except BlockingIOError:
-                time.sleep(0.01)
-                continue
-            except Exception:
-                time.sleep(0.05)
-                continue
 
-    # -------------------------- UDP 动作指令发送（广播 + ACK 重试）----------
-    def send_udp_action_cmd(self, action_type: ActionCmdType,
-                            payload: bytes = b"") -> bool:
-        """通过 UDP 广播发送 play/reset 指令，等待 ACK，超时重试。
-           返回 True 表示收到 ACK 确认，False 表示重试耗尽。
-        """
-        seqno = _next_seqno()
-        frame = build_udp_action_frame(action_type.value, seqno, payload)
-        cmd_name = action_type.name
+                ws_uri = f"ws://{server_addr}/action"
+                ws = websockets.sync.client.connect(ws_uri, timeout=WS_CONNECT_TIMEOUT)
+                print(f"✅ WebSocket 已连接: {ws_uri}")
 
-        ack_received = threading.Event()
+                with self.ws_lock:
+                    self.ws = ws
+                    self.ws_connected = True
 
-        def on_ack(success, status, addr):
-            ack_received.set()
+                # 接收循环
+                while self.ws_running:
+                    try:
+                        raw = ws.recv()
+                        if raw is None:
+                            break
+                        msg = json.loads(raw)
+                        event = msg.get("event", "")
+                        if event == "ack":
+                            self.ws_ack_event.set()
+                        elif event == "completed":
+                            self.action_playing = False
+                            self.add_log("动作组播放完成", "success")
+                            print("[WS] 动作组播放完成")
+                        elif event == "error":
+                            self.add_log(f"动作组错误: {msg.get('msg', '')}", "error")
+                            print(f"[WS] 动作组错误: {msg}")
+                    except json.JSONDecodeError:
+                        continue
+                    except (websockets.ConnectionClosed, OSError):
+                        break
 
-        for attempt in range(1, UDP_ACK_RETRIES + 1):
-            try:
-                # 注册 ACK 等待
-                with self.ack_lock:
-                    self.ack_waiting[seqno] = on_ack
-                # 发送广播
-                self.udp_sock.sendto(frame, (UDP_ACTION_IP, UDP_ACTION_PORT))
-                self.add_log(f"UDP 广播 [{cmd_name}] seq={seqno} 尝试 {attempt}/{UDP_ACK_RETRIES}", "info")
-                print(f"📤 UDP 广播 -> {UDP_ACTION_IP}:{UDP_ACTION_PORT}  [{cmd_name}] seq={seqno} try={attempt}")
+            except (websockets.InvalidURI, websockets.InvalidHandshake,
+                    OSError, TimeoutError) as e:
+                if self.ws_running:
+                    print(f"⚠️ WebSocket 连接失败 ({e}), 5s 后重试...")
+
             except Exception as e:
-                self.add_log(f"UDP 发送失败: {e}", "error")
-                with self.ack_lock:
-                    self.ack_waiting.pop(seqno, None)
+                print(f"❌ WebSocket 异常: {e}")
+
+            with self.ws_lock:
+                self.ws_connected = False
+                self.ws = None
+
+            if self.ws_running:
+                time.sleep(5.0)
+
+    # -------------------------- WebSocket 动作指令发送 ----------
+    def send_action_cmd(self, cmd_type: ActionCmdType, para: int = 0) -> bool:
+        """通过 WebSocket 发送动作指令，等待 ACK 确认。
+           para: 语音段落号（0=播放整组）
+           返回 True 表示收到服务端 ACK。
+        """
+        msg = {"cmd": cmd_type.value}
+        if cmd_type == ActionCmdType.PLAY and para > 0:
+            msg["para"] = para
+
+        with self.ws_lock:
+            if not self.ws or not self.ws_connected:
+                self.add_log(f"动作组服务未连接，无法发送 {cmd_type.value}", "warning")
+                return False
+            ws = self.ws
+
+        try:
+            self.ws_ack_event.clear()
+            ws.send(json.dumps(msg))
+            print(f"📤 WS -> {msg}")
+
+            # 等待服务端 ACK
+            if self.ws_ack_event.wait(timeout=WS_CMD_TIMEOUT):
+                self.add_log(f"✅ 动作指令确认: {cmd_type.value}", "success")
+                return True
+            else:
+                self.add_log(f"⚠️ 动作指令超时: {cmd_type.value}", "warning")
                 return False
 
-            # 等待 ACK
-            if ack_received.wait(timeout=UDP_ACK_TIMEOUT):
-                with self.ack_lock:
-                    self.ack_waiting.pop(seqno, None)
-                self.add_log(f"✅ 动作指令已确认: {cmd_name}", "success")
-                return True
-
-            # 超时，清理等待，用新 seqno 重试
-            with self.ack_lock:
-                self.ack_waiting.pop(seqno, None)
-            seqno = _next_seqno()
-            frame = build_udp_action_frame(action_type.value, seqno, payload)
-
-        self.add_log(f"⚠️ 动作指令 {cmd_name} 发送失败（{UDP_ACK_RETRIES}次重试均无ACK）", "warning")
-        return False
+        except (websockets.ConnectionClosed, OSError, AttributeError) as e:
+            self.add_log(f"WebSocket 发送失败: {e}", "error")
+            with self.ws_lock:
+                self.ws_connected = False
+            return False
 
     # -------------------------- 左侧任务面板鼠标点击 ----------
     def _handle_task_click(self, mx, my):
@@ -863,11 +887,11 @@ class RobotRemote:
         for j, sub_name in enumerate(current_main["subs"]):
             rect = pygame.Rect(left_x + 10 + main_w + 6, sub_y, sub_w, 28)
             if rect.collidepoint(mx, my):
-                # ---- 语音动作组子任务 → UDP 广播 + ACK ----
+                # ---- 语音动作组子任务 → WebSocket 发送 ----
                 if is_voice_group:
                     paragraph_num = j + 1  # 语音段落 1-15
-                    success = self.send_udp_action_cmd(
-                        ActionCmdType.PLAY, bytes([paragraph_num & 0xFF]))
+                    success = self.send_action_cmd(
+                        ActionCmdType.PLAY, para=paragraph_num)
                     if success:
                         self.action_playing = True
                         self.action_resetting = False
@@ -896,7 +920,7 @@ class RobotRemote:
                 if not self.action_playing:
                     self.action_playing = True
                     self.action_resetting = False
-                    self.send_udp_action_cmd(ActionCmdType.PLAY)
+                    self.send_action_cmd(ActionCmdType.PLAY)
                     self.add_log("▶️ 动作组播放中...", "success")
                     self.last_tip = "动作组播放中"
                 else:
@@ -906,7 +930,7 @@ class RobotRemote:
             if pygame.Rect(reset_x, btn_y, btn_w, btn_h).collidepoint(mx, my):
                 self.action_playing = False
                 self.action_resetting = True
-                self.send_udp_action_cmd(ActionCmdType.RESET)
+                self.send_action_cmd(ActionCmdType.RESET)
                 self.add_log("⏹ 动作组已归位", "warning")
                 self.last_tip = "动作归位完成"
                 return
@@ -1295,8 +1319,8 @@ class RobotRemote:
             self.draw_ui()
             clock.tick(60)
 
-        # 退出前关闭相机、串口和 ACK 线程
-        self.ack_running = False
+        # 退出前关闭相机、串口和 WebSocket
+        self.ws_running = False
         self.camera_running = False
         self.camera_playing = False
         self.camera_active = False

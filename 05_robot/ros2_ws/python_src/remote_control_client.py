@@ -51,17 +51,12 @@ class CmdType(Enum):
     TASK = 2    # 0x02 预设任务: payload = task_id_u8
     STOP = 3    # 0x03 紧急停止（与机端心跳复用同一数值，但由控制端主动发送）
 
-# ====================== WebSocket 动作组协议（UDP 发现 + WebSocket 通信）==========
-# 1. UDP 广播发现局域网内的动作组服务
-# 2. 拿到服务端 IP 后建立 WebSocket 连接
-# 3. JSON 协议双向通信
-WS_ACTION_PORT = 9998               # WebSocket 服务端口
-WS_DISCOVERY_PORT = 9999            # UDP 发现端口
-WS_DISCOVERY_MSG = b"DISCOVER_ACTION_SERVER"
-WS_DISCOVERY_RESP = b"ACTION_SERVER_HERE"
-WS_DISCOVERY_TIMEOUT = 2.0          # 发现超时 (秒)
-WS_CONNECT_TIMEOUT = 3.0            # WebSocket 连接超时 (秒)
-WS_CMD_TIMEOUT = 3.0                # 指令等待 ACK 超时 (秒)
+# ====================== WebSocket 动作组协议 ======================
+# 通过 WebSocket 向局域网内的动作组服务发送 play/reset 指令
+# 协议为 JSON，支持双向通信：发指令、收 ACK + 事件推送
+WS_ACTION_URI = "ws://192.168.9.253:9998/action"  # 动作组 WebSocket 服务
+WS_CONNECT_TIMEOUT = 3.0   # 连接超时 (秒)
+WS_CMD_TIMEOUT = 3.0       # 指令等待 ACK 超时 (秒)
 
 class ActionCmdType(Enum):
     """WebSocket 动作指令类型"""
@@ -710,42 +705,9 @@ class RobotRemote:
         self.linear_vel = 0.0
         self.angular_vel = 0.0
 
-    # -------------------------- UDP 发现 → WebSocket 连接 ----------
-    def _discover_server(self) -> str | None:
-        """UDP 广播发现局域网内的动作组服务，返回 'ip:port' 或 None"""
-        try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-            sock.settimeout(WS_DISCOVERY_TIMEOUT)
-            sock.bind(("0.0.0.0", 0))
-
-            # 广播发现包
-            sock.sendto(WS_DISCOVERY_MSG, ("255.255.255.255", WS_DISCOVERY_PORT))
-            print(f"🔍 UDP 发现: 广播 {WS_DISCOVERY_MSG} -> 端口 {WS_DISCOVERY_PORT}")
-
-            # 等待回复（可能多个，取第一个）
-            start = time.time()
-            while time.time() - start < WS_DISCOVERY_TIMEOUT:
-                try:
-                    data, addr = sock.recvfrom(256)
-                    if data == WS_DISCOVERY_RESP:
-                        ip = addr[0]
-                        print(f"✅ 发现动作组服务: {ip}")
-                        sock.close()
-                        return f"{ip}:{WS_ACTION_PORT}"
-                except socket.timeout:
-                    break
-
-            sock.close()
-            print("⚠️ UDP 发现超时，未找到动作组服务")
-            return None
-        except Exception as e:
-            print(f"❌ UDP 发现异常: {e}")
-            return None
-
     # -------------------------- WebSocket 连接 & 接收 ----------
     def _ws_connect_loop(self):
-        """后台线程：UDP 发现 → WebSocket 连接，断线自动重连"""
+        """后台线程：保持 WebSocket 连接，断线自动重连，收取服务端推送"""
         while self.ws_running:
             try:
                 with self.ws_lock:
@@ -757,17 +719,9 @@ class RobotRemote:
                         self.ws = None
                     self.ws_connected = False
 
-                # UDP 发现服务端 IP
-                server_addr = self._discover_server()
-                if server_addr is None:
-                    if self.ws_running:
-                        print("⏳ 5s 后重试发现...")
-                        time.sleep(5.0)
-                    continue
-
-                ws_uri = f"ws://{server_addr}/action"
-                ws = websockets.sync.client.connect(ws_uri, timeout=WS_CONNECT_TIMEOUT)
-                print(f"✅ WebSocket 已连接: {ws_uri}")
+                ws = websockets.sync.client.connect(
+                    WS_ACTION_URI, timeout=WS_CONNECT_TIMEOUT)
+                print(f"✅ WebSocket 已连接: {WS_ACTION_URI}")
 
                 with self.ws_lock:
                     self.ws = ws
@@ -781,12 +735,15 @@ class RobotRemote:
                             break
                         msg = json.loads(raw)
                         event = msg.get("event", "")
+                        # ACK 响应（播放/重置指令确认）
                         if event == "ack":
                             self.ws_ack_event.set()
+                        # 播放完成通知
                         elif event == "completed":
                             self.action_playing = False
                             self.add_log("动作组播放完成", "success")
                             print("[WS] 动作组播放完成")
+                        # 错误通知
                         elif event == "error":
                             self.add_log(f"动作组错误: {msg.get('msg', '')}", "error")
                             print(f"[WS] 动作组错误: {msg}")
@@ -799,6 +756,7 @@ class RobotRemote:
                     OSError, TimeoutError) as e:
                 if self.ws_running:
                     print(f"⚠️ WebSocket 连接失败 ({e}), 5s 后重试...")
+                    self.add_log("动作组服务未连接，等待重试...", "warning")
 
             except Exception as e:
                 print(f"❌ WebSocket 异常: {e}")
@@ -808,7 +766,7 @@ class RobotRemote:
                 self.ws = None
 
             if self.ws_running:
-                time.sleep(5.0)
+                time.sleep(5.0)  # 重连间隔
 
     # -------------------------- WebSocket 动作指令发送 ----------
     def send_action_cmd(self, cmd_type: ActionCmdType, para: int = 0) -> bool:
@@ -829,7 +787,7 @@ class RobotRemote:
         try:
             self.ws_ack_event.clear()
             ws.send(json.dumps(msg))
-            print(f"📤 WS -> {msg}")
+            print(f"📤 WS -> {WS_ACTION_URI}  {msg}")
 
             # 等待服务端 ACK
             if self.ws_ack_event.wait(timeout=WS_CMD_TIMEOUT):

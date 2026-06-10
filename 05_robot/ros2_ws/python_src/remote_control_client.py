@@ -63,6 +63,15 @@ class ActionCmdType(Enum):
     PLAY = "play"   # 播放动作组
     RESET = "reset" # 动作归位
 
+# ====================== WebSocket 握手协议 ======================
+WS_HANDSHAKE_URI = "ws://192.168.9.253:9999/handshake"
+
+class HandshakeCmdType(Enum):
+    """握手交互指令"""
+    AUTO = "auto"       # 自动感知模式
+    FORCE_ON = "on"     # 强制握手开启
+    FORCE_OFF = "off"   # 强制握手关闭
+
 # ====================== 10个预设任务定义 ======================
 TASK_LIST = {
     1: "语音动作组",
@@ -355,6 +364,14 @@ class RobotRemote:
         # 后台连接 + 接收线程
         self.ws_connect_retry = True
         threading.Thread(target=self._ws_connect_loop, daemon=True).start()
+
+        # ========== WebSocket 握手交互（AUTO / ON / OFF）==========
+        self.hs_ws = None
+        self.hs_connected = False
+        self.hs_running = True
+        self.hs_lock = threading.Lock()
+        self.hs_ack_event = threading.Event()
+        threading.Thread(target=self._hs_connect_loop, daemon=True).start()
 
         # 虚拟按键尺寸（WASD 控制区在底部中央）
         self.k_size = 56
@@ -803,6 +820,91 @@ class RobotRemote:
                 self.ws_connected = False
             return False
 
+    # -------------------------- 握手 WebSocket 连接 & 接收 ----------
+    def _hs_connect_loop(self):
+        """后台线程：保持握手服务 WebSocket 连接"""
+        while self.hs_running:
+            try:
+                with self.hs_lock:
+                    if self.hs_ws:
+                        try:
+                            self.hs_ws.close()
+                        except:
+                            pass
+                        self.hs_ws = None
+                    self.hs_connected = False
+
+                ws = websockets.sync.client.connect(
+                    WS_HANDSHAKE_URI, timeout=WS_CONNECT_TIMEOUT)
+                print(f"✅ 握手 WebSocket 已连接: {WS_HANDSHAKE_URI}")
+
+                with self.hs_lock:
+                    self.hs_ws = ws
+                    self.hs_connected = True
+
+                while self.hs_running:
+                    try:
+                        raw = ws.recv()
+                        if raw is None:
+                            break
+                        msg = json.loads(raw)
+                        event = msg.get("event", "")
+                        if event == "ack":
+                            self.hs_ack_event.set()
+                        elif event == "completed":
+                            self.add_log("握手动作完成", "success")
+                            print("[HS] 握手动作完成")
+                        elif event == "error":
+                            self.add_log(f"握手错误: {msg.get('msg', '')}", "error")
+                    except json.JSONDecodeError:
+                        continue
+                    except (websockets.ConnectionClosed, OSError):
+                        break
+
+            except (websockets.InvalidURI, websockets.InvalidHandshake,
+                    OSError, TimeoutError):
+                if self.hs_running:
+                    print("⚠️ 握手 WebSocket 连接失败，5s 后重试...")
+
+            except Exception as e:
+                print(f"❌ 握手 WebSocket 异常: {e}")
+
+            with self.hs_lock:
+                self.hs_connected = False
+                self.hs_ws = None
+
+            if self.hs_running:
+                time.sleep(5.0)
+
+    # -------------------------- 握手指令发送 ----------
+    def send_handshake_cmd(self, cmd: HandshakeCmdType) -> bool:
+        """通过 WebSocket 发送握手指令，等待 ACK"""
+        msg = {"cmd": cmd.value}
+
+        with self.hs_lock:
+            if not self.hs_ws or not self.hs_connected:
+                self.add_log("握手服务未连接", "warning")
+                return False
+            ws = self.hs_ws
+
+        try:
+            self.hs_ack_event.clear()
+            ws.send(json.dumps(msg))
+            print(f"📤 HS -> {WS_HANDSHAKE_URI}  {msg}")
+
+            if self.hs_ack_event.wait(timeout=WS_CMD_TIMEOUT):
+                self.add_log(f"✅ 握手指令确认: {cmd.value}", "success")
+                return True
+            else:
+                self.add_log(f"⚠️ 握手指令超时: {cmd.value}", "warning")
+                return False
+
+        except (websockets.ConnectionClosed, OSError, AttributeError) as e:
+            self.add_log(f"握手 WebSocket 发送失败: {e}", "error")
+            with self.hs_lock:
+                self.hs_connected = False
+            return False
+
     # -------------------------- 左侧任务面板鼠标点击 ----------
     def _handle_task_click(self, mx, my):
         panel_y = 72
@@ -857,14 +959,28 @@ class RobotRemote:
                     else:
                         self.last_tip = f"语音段落 {paragraph_num} 发送失败"
                 else:
-                    # ---- 非语音组子任务 → 保持原有点击切换逻辑 ----
-                    sid = f"{self.current_main_task}-{j}"
-                    new_state = not self.sub_task_states.get(sid, False)
-                    self.sub_task_states[sid] = new_state
-                    if new_state:
-                        self.add_log(f"已开启子任务: {sub_name}", "success")
+                    # ---- 握手交互子任务 → WebSocket 发送 ----
+                    if self.current_main_task == 1:  # "2. 握手交互"
+                        handshake_cmds = [
+                            HandshakeCmdType.AUTO,      # j=0: 自动感知模式
+                            HandshakeCmdType.FORCE_ON,  # j=1: 强制握手开启
+                            HandshakeCmdType.FORCE_OFF, # j=2: 强制握手关闭
+                        ]
+                        if j < len(handshake_cmds):
+                            success = self.send_handshake_cmd(handshake_cmds[j])
+                            if success:
+                                self.last_tip = sub_name
+                            else:
+                                self.last_tip = f"{sub_name} 发送失败"
                     else:
-                        self.add_log(f"已关闭子任务: {sub_name}", "info")
+                        # ---- 其他子任务 → 保持原有点击切换逻辑 ----
+                        sid = f"{self.current_main_task}-{j}"
+                        new_state = not self.sub_task_states.get(sid, False)
+                        self.sub_task_states[sid] = new_state
+                        if new_state:
+                            self.add_log(f"已开启子任务: {sub_name}", "success")
+                        else:
+                            self.add_log(f"已关闭子任务: {sub_name}", "info")
                 return
             sub_y += 32
 
@@ -1279,6 +1395,7 @@ class RobotRemote:
 
         # 退出前关闭相机、串口和 WebSocket
         self.ws_running = False
+        self.hs_running = False
         self.camera_running = False
         self.camera_playing = False
         self.camera_active = False

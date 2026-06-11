@@ -298,7 +298,6 @@ class RobotRemote:
         self.joystick_num_axes = 0
         self.joystick_num_buttons = 0
         self.joystick_num_hats = 0
-        self.last_joystick_buf = b""  # 上一帧缓存，无变化不发送
         self.last_tip = "等待操作"
         self.last_joystick_send_time = 0
 
@@ -514,34 +513,35 @@ class RobotRemote:
             print(f"❌ 串口发送失败: {e}")
 
     def _read_joystick_raw(self) -> bytes:
-        """读取摇杆当前所有轴、按钮、十字帽原始值，序列化为字节流
+        """读取摇杆当前所有轴、按钮原始值，序列化为精简二进制格式
 
-        格式（参考遥控器透传协议）：
-          - 每个轴: 2字节小端 uint16, 范围 0~2047 (将 -1~1 映射到 0~2047)
-          - 每个按钮: 1字节, 0/1
-          - 每个十字帽: 2字节, (hx+2, hy+2)
+        格式：
+          [0xAA 帧头:1B][轴数:1B][轴0~N: int16小端 × N][按钮数:1B][按钮0~M: uint8 × M]
         """
         if not self.joystick_connected or self.joystick is None:
             return b""
 
         pygame.event.pump()  # 刷新手柄状态
+        import struct
         buf = bytearray()
 
-        # 摇杆轴：浮点转2字节整型（-1~1 → 0~2047）
-        for idx in range(self.joystick_num_axes):
-            val = int((self.joystick.get_axis(idx) + 1) * 1023.5)
-            buf.append(val & 0xFF)
-            buf.append((val >> 8) & 0xFF)
+        # 帧头
+        buf.append(0xAA)
 
-        # 按钮：按下1 / 松开0，单字节
-        for idx in range(self.joystick_num_buttons):
+        # 轴数据
+        num_axes = self.joystick_num_axes
+        buf.append(num_axes & 0xFF)
+        for idx in range(num_axes):
+            # float -1~1 → int16 -32767~32767
+            val = int(self.joystick.get_axis(idx) * 32767)
+            val = max(-32767, min(32767, val))
+            buf.extend(struct.pack('<h', val))
+
+        # 按钮数据
+        num_btns = self.joystick_num_buttons
+        buf.append(num_btns & 0xFF)
+        for idx in range(num_btns):
             buf.append(self.joystick.get_button(idx))
-
-        # 十字帽方向
-        for idx in range(self.joystick_num_hats):
-            hx, hy = self.joystick.get_hat(idx)
-            buf.append(hx + 2)
-            buf.append(hy + 2)
 
         return bytes(buf)
 
@@ -1289,13 +1289,18 @@ class RobotRemote:
                 if current_time - self.last_joystick_send_time >= joystick_interval:
                     buf = self._read_joystick_raw()
                     if buf:
-                        # 数据无变化则跳过发送（进一步节流）
-                        if buf != self.last_joystick_buf:
-                            try:
-                                self.ser.write(buf)
-                                self.last_joystick_buf = buf
-                            except Exception as e:
-                                print(f"❌ 透传发送失败: {e}")
+                        # 调试：每5秒打印一次各轴值
+                        if int(current_time) % 5 == 0 and int(current_time) != getattr(self, '_last_debug_ts', 0):
+                            self._last_debug_ts = int(current_time)
+                            axes_str = '  '.join(
+                                f"A{i}:{self.joystick.get_axis(i):+.3f}"
+                                for i in range(self.joystick_num_axes)
+                            )
+                            print(f"[JOY] {axes_str}")
+                        try:
+                            self.ser.write(buf)
+                        except Exception as e:
+                            print(f"❌ 透传发送失败: {e}")
                         self.last_joystick_send_time = current_time
             # ===============================================================
 

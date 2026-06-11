@@ -92,11 +92,28 @@ target_link_libraries(camera_streamer_node
   ${FFMPEG_LIBRARIES}
 )
 
+# ========== 串口 Joy Bridge 节点 ==========
+add_executable(serial_joy_bridge_node
+  src/serial_joy_bridge.cpp
+  src/serial_joy_bridge_main.cpp
+)
+
+ament_target_dependencies(serial_joy_bridge_node
+  rclcpp
+  std_msgs
+  sensor_msgs
+)
+
+target_link_libraries(serial_joy_bridge_node
+  ${Boost_LIBRARIES}
+)
+
 # 安装到bin目录
 install(TARGETS
   module_manager_node
   test_arm_controller_node
   camera_streamer_node
+  serial_joy_bridge_node
   DESTINATION lib/${PROJECT_NAME}
 )
 

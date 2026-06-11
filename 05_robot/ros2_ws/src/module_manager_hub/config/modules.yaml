@@ -2,7 +2,7 @@
 
 # ---- 串口通信配置 ----
 serial:
-  port: "/dev/ttyUSB0"
+  port: "/dev/ttyUSB123"
   baud_rate: 115200
 
 # ---- ROS2 模块 ----

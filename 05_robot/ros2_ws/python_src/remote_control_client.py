@@ -2,7 +2,6 @@ import json
 import pygame
 import sys
 import time
-import struct
 import serial
 import socket
 import threading
@@ -292,33 +291,16 @@ class RobotRemote:
         self.font_sm = load_ui_font(14)
         self.font_mono = load_ui_font(12, mono=True)
 
-        # 按键状态
-        self.key_w = False
-        self.key_a = False
-        self.key_s = False
-        self.key_d = False
-
-        # 速度变量
-        self.linear_vel = 0.0
-        self.angular_vel = 0.0
-        self.linear_cfg = LINEAR_SPEED_MAX
-        self.angular_cfg = ANGULAR_SPEED_MAX
+        # 摇杆透传配置
+        self.joystick = None
+        self.joystick_connected = False
+        self.joystick_name = ""
+        self.joystick_num_axes = 0
+        self.joystick_num_buttons = 0
+        self.joystick_num_hats = 0
+        self.last_joystick_buf = b""  # 上一帧缓存，无变化不发送
         self.last_tip = "等待操作"
-
-        # 加减速参数（预加速 / 预减速）
-        self.linear_accel = 0.2     # 线加速度 (m/s²)，与运控节点一致
-        self.angular_accel = 0.3    # 角加速度 (rad/s²)，与运控节点一致
-        self.last_update_time = 0.0  # 上次 update_speed 的时间
-
-        # 【核心】运动状态控制
-        self.is_moving = False
-        self.last_cmd_time = 0
-
-        # 任务指令重发（绕过 CH340 latency timer + 增加可靠性）
-        self.task_retry_count = 0        # 当前剩余重发次数
-        self.task_retry_max = 5          # 总共发 5 次
-        self.task_retry_num = 0          # 当前重发的任务编号
-        self.last_task_time = 0          # 上次任务发送时间
+        self.last_joystick_send_time = 0
 
         # 相机画面（C键播放/停止，画面常驻）
         self.camera_playing = False     # 是否正在播放
@@ -346,12 +328,18 @@ class RobotRemote:
             for j, _ in enumerate(main["subs"]):
                 self.sub_task_states[f"{i}-{j}"] = False
 
+        # 初始化摇杆
+        self._init_joystick()
+
         # 日志
         self.logs = []
         self.add_log("远程控制系统已启动")
         self.add_log("433MHz控制链路已连接")
         self.add_log("915MHz图传链路已连接")
-        self.add_log("机器人处于基础运控就绪状态")
+        if self.joystick_connected:
+            self.add_log(f"摇杆已连接: {self.joystick_name}", "success")
+        else:
+            self.add_log("⚠️ 未检测到手柄，请连接后重启", "warning")
 
         # ========== WebSocket 动作组（Play / Reset）==========
         self.ws = None
@@ -372,10 +360,6 @@ class RobotRemote:
         self.hs_lock = threading.Lock()
         self.hs_ack_event = threading.Event()
         threading.Thread(target=self._hs_connect_loop, daemon=True).start()
-
-        # 虚拟按键尺寸（WASD 控制区在底部中央）
-        self.k_size = 56
-        self.k_gap = 8
 
         # 串口初始化
         try:
@@ -402,9 +386,7 @@ class RobotRemote:
 
         print(f"✅ 运动指令发送频率: {CMD_SEND_RATE}Hz")
 
-        # 防抖标记
-        self.task_sent = False
-        self.stop_sent = False
+        # 串口仅用于摇杆透传，不再发送协议帧
 
     # -------------------------- 日志 --------------------------
     def add_log(self, message, level="info"):
@@ -496,48 +478,30 @@ class RobotRemote:
                 pass
         self.dtu_connected = False
 
-    def update_speed(self):
-        """带加减速的平滑速度更新"""
-        now = time.time()
-        dt = now - self.last_update_time if self.last_update_time > 0 else 0.02
-        self.last_update_time = now
-        # 限幅 dt，防止卡顿时速度突变
-        dt = min(dt, 0.1)
+    def _init_joystick(self):
+        """初始化游戏手柄"""
+        count = pygame.joystick.get_count()
+        print("检测到手柄数量：", count)
+        if count == 0:
+            print("未找到手柄，仅保留键盘/鼠标操作")
+            return
 
-        # 1. 计算目标速度（基于按键）
-        target_linear = 0.0
-        target_angular = 0.0
-        if self.key_w:
-            target_linear += self.linear_cfg
-        if self.key_s:
-            target_linear -= self.linear_cfg
-        if self.key_a:
-            target_angular += self.angular_cfg
-        if self.key_d:
-            target_angular -= self.angular_cfg
-
-        # 2. 线性加速/减速逼近目标
-        diff_linear = target_linear - self.linear_vel
-        diff_angular = target_angular - self.angular_vel
-
-        if abs(diff_linear) > 0.001:
-            step = self.linear_accel * dt
-            self.linear_vel += step if diff_linear > 0 else -step
-            # 防止过冲
-            if abs(diff_linear) < step:
-                self.linear_vel = target_linear
-        else:
-            self.linear_vel = target_linear
-
-        if abs(diff_angular) > 0.001:
-            step = self.angular_accel * dt
-            self.angular_vel += step if diff_angular > 0 else -step
-            if abs(diff_angular) < step:
-                self.angular_vel = target_angular
-        else:
-            self.angular_vel = target_angular
-
-        self.is_moving = (abs(self.linear_vel) > 0.001 or abs(self.angular_vel) > 0.001)
+        try:
+            js = pygame.joystick.Joystick(0)
+            js.init()
+            self.joystick = js
+            self.joystick_connected = True
+            self.joystick_name = js.get_name()
+            self.joystick_num_axes = js.get_numaxes()
+            self.joystick_num_buttons = js.get_numbuttons()
+            self.joystick_num_hats = js.get_numhats()
+            print(f"\n=== 手柄 0 ===")
+            print(f"名称: {self.joystick_name}")
+            print(f"轴数: {self.joystick_num_axes}")
+            print(f"按钮数: {self.joystick_num_buttons}")
+            print(f"帽子数: {self.joystick_num_hats}")
+        except Exception as e:
+            print(f"手柄初始化失败: {e}")
 
     # -------------------------- 指令封装（二进制协议）--------------------------
     def send_frame(self, frame: bytes):
@@ -549,15 +513,37 @@ class RobotRemote:
         except Exception as e:
             print(f"❌ 串口发送失败: {e}")
 
-    def send_move_cmd(self):
-        """发送运动控制指令：
-           帧: 0xAA | 0x01 | 0x08 | linear_f32(LE,4B) | angular_f32(LE,4B) | checksum
+    def _read_joystick_raw(self) -> bytes:
+        """读取摇杆当前所有轴、按钮、十字帽原始值，序列化为字节流
+
+        格式（参考遥控器透传协议）：
+          - 每个轴: 2字节小端 uint16, 范围 0~2047 (将 -1~1 映射到 0~2047)
+          - 每个按钮: 1字节, 0/1
+          - 每个十字帽: 2字节, (hx+2, hy+2)
         """
-        linear = round(self.linear_vel, 2)
-        angular = round(self.angular_vel, 2)
-        payload = struct.pack("<ff", linear, angular)  # 小端 float32 x 2
-        frame = build_frame(CmdType.MOVE.value, payload)
-        self.send_frame(frame)
+        if not self.joystick_connected or self.joystick is None:
+            return b""
+
+        pygame.event.pump()  # 刷新手柄状态
+        buf = bytearray()
+
+        # 摇杆轴：浮点转2字节整型（-1~1 → 0~2047）
+        for idx in range(self.joystick_num_axes):
+            val = int((self.joystick.get_axis(idx) + 1) * 1023.5)
+            buf.append(val & 0xFF)
+            buf.append((val >> 8) & 0xFF)
+
+        # 按钮：按下1 / 松开0，单字节
+        for idx in range(self.joystick_num_buttons):
+            buf.append(self.joystick.get_button(idx))
+
+        # 十字帽方向
+        for idx in range(self.joystick_num_hats):
+            hx, hy = self.joystick.get_hat(idx)
+            buf.append(hx + 2)
+            buf.append(hy + 2)
+
+        return bytes(buf)
 
     def send_task_cmd(self, task_num):
         """发送预设任务指令：
@@ -717,10 +703,6 @@ class RobotRemote:
         """
         frame = build_frame(CmdType.STOP.value)
         self.send_frame(frame)
-        # 急停后重置运动状态
-        self.is_moving = False
-        self.linear_vel = 0.0
-        self.angular_vel = 0.0
 
     # -------------------------- WebSocket 连接 & 接收 ----------
     def _ws_connect_loop(self):
@@ -1041,8 +1023,8 @@ class RobotRemote:
         self._draw_panel(right_x, panel_y, right_w, panel_h, "操作日志", (96, 165, 250, 255))
         self._draw_log_panel(right_x, panel_y, right_w, panel_h)
 
-        # ==================== 底部WASD控制区 ====================
-        self._draw_wasd_panel()
+        # ==================== 底部摇杆状态区 ====================
+        self._draw_joystick_panel()
 
         pygame.display.flip()
 
@@ -1169,10 +1151,10 @@ class RobotRemote:
 
         # 视频信息
         info_y = content_y + vh + 8
-        self.screen.blit(self.font_sm.render("分辨率: 480P@30fps", True, (156, 163, 175)), (px + 12, info_y))
-        cw = int(self.font_sm.size("分辨率: 480P@30fps")[0])
+        self.screen.blit(self.font_sm.render("分辨率: 480P@20fps", True, (156, 163, 175)), (px + 12, info_y))
+        cw = int(self.font_sm.size("分辨率: 480P@20fps")[0])
         self.screen.blit(self.font_sm.render("编码: H.264", True, (156, 163, 175)), (px + 12 + cw + 30, info_y))
-        self.screen.blit(self.font_sm.render("延迟: <150ms", True, (156, 163, 175)), (px + pw - 90, info_y))
+        self.screen.blit(self.font_sm.render("延迟: <200ms", True, (156, 163, 175)), (px + pw - 90, info_y))
 
     # ---------- 右侧：日志面板 ----------
     def _draw_log_panel(self, px, py, pw, ph):
@@ -1204,95 +1186,73 @@ class RobotRemote:
         help_title = self.font_md.render("操作说明", True, (250, 204, 21))
         self.screen.blit(help_title, (px + 12, help_y))
         helps = [
-            "• WASD键: 控制机器人移动",
+            "• 摇杆: 控制机器人移动",
             "• 数字键1-4: 切换主任务分类",
-            "• 空格键: 紧急停止所有运动",
             "• C键: 相机播放/暂停",
         ]
         for i, h in enumerate(helps):
             self.screen.blit(self.font_sm.render(h, True, (209, 213, 219)), (px + 12, help_y + 24 + i * 20))
 
-    # ---------- 底部：WASD 控制 ----------
-    def _draw_wasd_panel(self):
+    # ---------- 底部：摇杆状态 ----------
+    def _draw_joystick_panel(self):
         panel_y = self.win_h - 90
         panel_h = 82
         pygame.draw.rect(self.screen, (31, 41, 55), (12, panel_y, self.win_w - 24, panel_h), border_radius=8)
-        title = self.font_md.render("运动控制", True, (96, 165, 250))
+        title = self.font_md.render("遥控器数据透传", True, (96, 165, 250))
         self.screen.blit(title, (24, panel_y + 6))
         pygame.draw.line(self.screen, (75, 85, 99), (24, panel_y + 30), (self.win_w - 24, panel_y + 30), 1)
 
-        # WASD 按键在底部居中
-        cx = self.win_w // 2
-        cy = panel_y + panel_h // 2
-        s = self.k_size
-        g = self.k_gap
+        # 摇杆状态信息
+        info_x = 30
+        info_y = panel_y + 40
 
-        # 绘制4个按键
-        keys_state = {"W": self.key_w, "A": self.key_a, "S": self.key_s, "D": self.key_d}
-        positions = {"W": (cx, cy - s - g), "A": (cx - s - g, cy),
-                     "S": (cx, cy), "D": (cx + s + g, cy)}
+        if self.joystick_connected:
+            # 显示手柄连接信息
+            conn_color = (34, 197, 94)
+            conn_text = f"✅ {self.joystick_name} | 轴:{self.joystick_num_axes} 按钮:{self.joystick_num_buttons} 十字帽:{self.joystick_num_hats}"
+        else:
+            conn_color = (239, 68, 68)
+            conn_text = "❌ 未检测到手柄"
 
-        for k, (kx, ky) in positions.items():
-            pressed = keys_state[k]
-            color = (59, 130, 246) if pressed else (55, 65, 81)
-            border = (255, 255, 255) if pressed else (107, 114, 128)
-            rect = (kx - s//2, ky - s//2, s, s)
-            pygame.draw.rect(self.screen, color, rect, border_radius=6)
-            pygame.draw.rect(self.screen, border, rect, 2, border_radius=6)
-            txt = self.font_md.render(k, True, (255, 255, 255))
-            self.screen.blit(txt, (kx - txt.get_width()//2, ky - txt.get_height()//2))
+        self.screen.blit(self.font_sm.render(conn_text, True, conn_color), (info_x, info_y))
+
+        # 显示当前各轴数值（仅当有手柄时）
+        if self.joystick_connected:
+            axis_strs = []
+            for i in range(min(self.joystick_num_axes, 6)):  # 最多显示6个轴
+                try:
+                    v = self.joystick.get_axis(i)
+                    axis_strs.append(f"A{i}:{v:+.2f}")
+                except:
+                    pass
+            axis_text = "  ".join(axis_strs)
+            self.screen.blit(self.font_sm.render(axis_text, True, (156, 163, 175)), (info_x + 12, info_y + 22))
+
+            # 按钮快速预览
+            btn_on = sum(1 for i in range(self.joystick_num_buttons) if self.joystick.get_button(i))
+            btn_text = f"按钮按下: {btn_on}/{self.joystick_num_buttons}"
+            cw = int(self.font_sm.size(axis_text)[0]) if axis_text else 0
+            self.screen.blit(self.font_sm.render(btn_text, True, (250, 204, 21)), (info_x + 12 + cw + 40, info_y + 22))
+        else:
+            self.screen.blit(self.font_sm.render("请在启动前连接USB手柄", True, (107, 114, 128)), (info_x + 12, info_y + 22))
 
         # 底部提示
-        hint = self.font_sm.render("W=前进 | S=后退 | A=左转 | D=右转 | 空格=紧急停止", True, (156, 163, 175))
+        hint = self.font_sm.render("摇杆=运动控制 | 数字键1-4=切换主任务 | C=相机 | ESC=退出", True, (156, 163, 175))
         self.screen.blit(hint, (self.win_w//2 - hint.get_width()//2, panel_y + panel_h - 18))
 
     def run(self):
         clock = pygame.time.Clock()
         running = True
+        # 摇杆透传降频配置（从配置常量读取 FPS）
+        JOYSTICK_FPS = 15                     # 透传发送帧率
+        joystick_interval = 1.0 / JOYSTICK_FPS
         print("========== 三代人形机器人远程控制系统 ==========")
-        print("✅ WASD 运动控制 | 数字键 1-4 主任务 | 空格 急停")
+        print(f"✅ 摇杆透传降频 {JOYSTICK_FPS}Hz | 数字键 1-4 切换主任务")
+        print(f"✅ 摇杆: {self.joystick_name if self.joystick_connected else '未连接'}")
         print("================================================\n")
-
-        old_w, old_a, old_s, old_d = False, False, False, False
-        was_moving = False  # 记录上一帧是否在运动
-
-        # 任务点击防抖
-        main_task_clicked = False
-        sub_task_clicked = False
 
         while running:
             current_time = time.time()
-
-            # 轮询WASD按键
-            keys = pygame.key.get_pressed()
-            self.key_w = keys[pygame.K_w]
-            self.key_a = keys[pygame.K_a]
-            self.key_s = keys[pygame.K_s]
-            self.key_d = keys[pygame.K_d]
-
-            # WASD 按键日志
-            if self.key_w and not old_w:
-                self.last_tip = "W - 前进"
-                self.add_log("运动指令: W 前进", "info")
-            if not self.key_w and old_w:
-                self.add_log("停止指令: W 松开", "info")
-            if self.key_a and not old_a:
-                self.last_tip = "A - 左转"
-                self.add_log("运动指令: A 左转", "info")
-            if not self.key_a and old_a:
-                self.add_log("停止指令: A 松开", "info")
-            if self.key_s and not old_s:
-                self.last_tip = "S - 后退"
-                self.add_log("运动指令: S 后退", "info")
-            if not self.key_s and old_s:
-                self.add_log("停止指令: S 松开", "info")
-            if self.key_d and not old_d:
-                self.last_tip = "D - 右转"
-                self.add_log("运动指令: D 右转", "info")
-            if not self.key_d and old_d:
-                self.add_log("停止指令: D 松开", "info")
-
-            old_w, old_a, old_s, old_d = self.key_w, self.key_a, self.key_s, self.key_d
 
             # 事件循环
             for event in pygame.event.get():
@@ -1300,45 +1260,13 @@ class RobotRemote:
                     running = False
 
                 if event.type == pygame.KEYDOWN:
-                    # 数字键1-4：切换主任务 + 同时发送预设任务指令
+                    # 数字键1-4：仅切换左侧任务面板，不再发送串口指令
                     if pygame.K_1 <= event.key <= pygame.K_4:
                         idx = event.key - pygame.K_1
                         if idx < len(self.main_tasks):
                             self.current_main_task = idx
                             self.add_log(f"切换到主任务: {self.main_tasks[idx]['name']}", "info")
-                        # 数字键1-4同时作为预设任务发送
-                        num = event.key - pygame.K_0
-                        if not self.task_sent:
-                            self.last_tip = f"执行任务: {TASK_LIST[num]}"
-                            self.add_log(f"执行预设任务 {num}: {TASK_LIST[num]}", "info")
-                            self.task_retry_count = self.task_retry_max
-                            self.task_retry_num = num
-                            self.task_sent = True
-
-                    # 数字键5-9：预设任务
-                    elif pygame.K_5 <= event.key <= pygame.K_9:
-                        num = event.key - pygame.K_0
-                        if not self.task_sent:
-                            self.last_tip = f"执行任务: {TASK_LIST[num]}"
-                            self.add_log(f"执行预设任务 {num}: {TASK_LIST[num]}", "info")
-                            self.task_retry_count = self.task_retry_max
-                            self.task_retry_num = num
-                            self.task_sent = True
-                    elif event.key == pygame.K_0:
-                        if not self.task_sent:
-                            self.last_tip = f"执行任务: {TASK_LIST[10]}"
-                            self.add_log(f"执行预设任务 10: {TASK_LIST[10]}", "info")
-                            self.task_retry_count = self.task_retry_max
-                            self.task_retry_num = 10
-                            self.task_sent = True
-
-                    # 空格：急停指令
-                    elif event.key == pygame.K_SPACE:
-                        if not self.stop_sent:
-                            self.last_tip = "紧急停止"
-                            self.send_stop_cmd()
-                            self.add_log("紧急停止已触发", "warning")
-                            self.stop_sent = True
+                            self.last_tip = f"{self.main_tasks[idx]['name']}"
 
                     # C 键播放/暂停相机
                     elif event.key == pygame.K_c:
@@ -1348,47 +1276,28 @@ class RobotRemote:
                     elif event.key == pygame.K_ESCAPE:
                         running = False
 
-                # 按键抬起，解除防抖 + 立即停止重发
-                if event.type == pygame.KEYUP:
-                    if pygame.K_1 <= event.key <= pygame.K_9 or event.key == pygame.K_0:
-                        self.task_sent = False
-                        self.task_retry_count = 0
-                    if event.key == pygame.K_SPACE:
-                        self.stop_sent = False
+                # ---- 鼠标点击：左侧任务面板 ----
 
                 # ---- 鼠标点击：左侧任务面板 ----
                 if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                     mx, my = event.pos
                     self._handle_task_click(mx, my)
 
-            # 更新速度和运动状态
-            self.update_speed()
-
-            # ===================== 【核心发送逻辑】 =====================
-            # 1. 正在运动：按固定频率持续发送
-            if self.is_moving:
-                if current_time - self.last_cmd_time >= 1/CMD_SEND_RATE:
-                    self.send_move_cmd()
-                    self.last_cmd_time = current_time
-                was_moving = True
-
-            # 2. 刚停止运动：只发送一次停止指令
-            elif was_moving:
-                self.send_move_cmd()  # 发送最后一次0速度指令
-                print("所有按键松开，发送停止指令")
-                was_moving = False
-            # ==========================================================
-
-            # ===================== 【任务指令重发逻辑】 =====================
-            # 按同样 20Hz 频率重发，绕过 CH340 latency timer
-            if self.task_retry_count > 0:
-                if current_time - self.last_task_time >= 1/CMD_SEND_RATE:
-                    self.send_task_cmd(self.task_retry_num)
-                    self.last_task_time = current_time
-                    self.task_retry_count -= 1
-                    if self.task_retry_count == 0:
-                        self.task_retry_num = 0
-            # =============================================================
+            # ===================== 【摇杆透传降频发送】 =====================
+            if self.joystick_connected and self.ser and self.ser.is_open:
+                # 按降频间隔发送
+                if current_time - self.last_joystick_send_time >= joystick_interval:
+                    buf = self._read_joystick_raw()
+                    if buf:
+                        # 数据无变化则跳过发送（进一步节流）
+                        if buf != self.last_joystick_buf:
+                            try:
+                                self.ser.write(buf)
+                                self.last_joystick_buf = buf
+                            except Exception as e:
+                                print(f"❌ 透传发送失败: {e}")
+                        self.last_joystick_send_time = current_time
+            # ===============================================================
 
             self.draw_ui()
             clock.tick(60)
@@ -1400,7 +1309,6 @@ class RobotRemote:
         self.camera_playing = False
         self.camera_active = False
         self.camera_frame = None
-        self.send_move_cmd()
         if self.ser:
             self.ser.close()
         pygame.quit()

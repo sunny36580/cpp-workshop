@@ -545,11 +545,8 @@ class RobotRemote:
             if USE_LINUX_AXIS_MAP:
                 # A0/A2: 中心 -0.5, 范围 -1.0~0.0 (半范围 0.5)
                 # A1/A3: 中心 +0.5, 范围  0.0~1.0 (半范围 0.5)
-                # A1/A3 方向与预期相反，取反修正
                 center = -0.5 if idx % 2 == 0 else 0.5
-                norm = (raw - center) / 0.5
-                if idx % 2 == 1:  # A1, A3 取反
-                    norm = -norm
+                norm = -((raw - center) / 0.5)  # 取反
             else:
                 norm = raw
 
@@ -1245,9 +1242,7 @@ class RobotRemote:
                     v = self.joystick.get_axis(i)
                     if USE_LINUX_AXIS_MAP:
                         center = -0.5 if i % 2 == 0 else 0.5
-                        v = (v - center) / 0.5
-                        if i % 2 == 1:  # A1, A3 取反
-                            v = -v
+                        v = -((v - center) / 0.5)  # 取反
                     axis_strs.append(f"A{i}:{v:+.2f}")
                 except:
                     pass

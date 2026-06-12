@@ -105,6 +105,7 @@ ament_target_dependencies(serial_joy_bridge_node
 )
 
 target_link_libraries(serial_joy_bridge_node
+  yaml-cpp
   ${Boost_LIBRARIES}
 )
 

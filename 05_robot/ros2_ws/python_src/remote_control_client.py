@@ -22,7 +22,7 @@ CAMERA_PORT = 8888             # TCP 推流端口
 # 串口配置（与 C++ 模块管理器一致）
 # Windows 下 CH340 通常是 COM3，改为: SERIAL_PORT = "COM3"
 # Linux  下 CH340 通常是 /dev/ttyUSB0 或 /dev/ttyCH340USB0
-SERIAL_PORT = "/dev/ttyUSB1"
+SERIAL_PORT = "/dev/ttyUSB0"
 SERIAL_BAUD = 115200
 
 # 二进制协议常量（32 字节固定帧，与 C++ 端保持一致）
@@ -108,7 +108,7 @@ _IS_WINDOWS = sys.platform == "win32" or sys.platform == "cygwin"
 # Linux 下手柄轴值范围可能跟 Windows 不同，需要做映射。
 # Linux: A0/A2 中心 -0.5 (范围 -1~0), A1/A3 中心 +0.5 (范围 0~1)
 # 设 True 启用 Linux 轴映射，False 用原始值（Windows 默认）
-USE_LINUX_AXIS_MAP = True
+USE_LINUX_AXIS_MAP = False
 
 # ---------- Windows：直接用 SysFont ----------
 _WIN_CN_FONT_NAME = "microsoftyahei"
@@ -522,7 +522,8 @@ class RobotRemote:
         """读取摇杆当前所有轴、按钮原始值，序列化为精简二进制格式
 
         格式：
-          [0xAA 帧头:1B][轴数:1B][轴0~N: int16小端 × N][按钮数:1B][按钮0~M: uint8 × M]
+          [0xAA 0x55 帧头:2B][轴数:1B][轴0~N: int16小端 × N]
+          [按钮数:1B][按钮0~M: uint8 × M][CRC16:2B 小端]
         """
         if not self.joystick_connected or self.joystick is None:
             return b""
@@ -531,8 +532,8 @@ class RobotRemote:
         import struct
         buf = bytearray()
 
-        # 帧头
-        buf.append(0xAA)
+        # 帧头（2字节，避免轴数据中的 0xAA 误同步）
+        buf.extend([0xAA, 0x55])
 
         # 轴数据
         num_axes = self.joystick_num_axes
@@ -548,7 +549,7 @@ class RobotRemote:
                 center = -0.5 if idx % 2 == 0 else 0.5
                 norm = -((raw - center) / 0.5)  # 取反
             else:
-                norm = raw
+                norm = -raw
 
             norm = max(-1.0, min(1.0, norm))
             val = int(norm * 32767)
@@ -560,6 +561,10 @@ class RobotRemote:
         buf.append(num_btns & 0xFF)
         for idx in range(num_btns):
             buf.append(self.joystick.get_button(idx))
+
+        # CRC16（校验范围：SOF之后的所有数据）
+        crc = calc_crc16(bytes(buf[2:]))
+        buf.extend(struct.pack('<H', crc))
 
         return bytes(buf)
 
@@ -1243,6 +1248,8 @@ class RobotRemote:
                     if USE_LINUX_AXIS_MAP:
                         center = -0.5 if i % 2 == 0 else 0.5
                         v = -((v - center) / 0.5)  # 取反
+                    else:
+                        v = -v  # 取反
                     axis_strs.append(f"A{i}:{v:+.2f}")
                 except:
                     pass

@@ -104,6 +104,12 @@ import os
 
 _IS_WINDOWS = sys.platform == "win32" or sys.platform == "cygwin"
 
+# ====================== 平台适配 ======================
+# Linux 下手柄轴值范围可能跟 Windows 不同，需要做映射。
+# Linux: A0/A2 中心 -0.5 (范围 -1~0), A1/A3 中心 +0.5 (范围 0~1)
+# 设 True 启用 Linux 轴映射，False 用原始值（Windows 默认）
+USE_LINUX_AXIS_MAP = True
+
 # ---------- Windows：直接用 SysFont ----------
 _WIN_CN_FONT_NAME = "microsoftyahei"
 _WIN_CN_MONO_NAME = "microsoftyahei"
@@ -532,8 +538,23 @@ class RobotRemote:
         num_axes = self.joystick_num_axes
         buf.append(num_axes & 0xFF)
         for idx in range(num_axes):
-            # float -1~1 → int16 -32767~32767
-            val = int(self.joystick.get_axis(idx) * 32767)
+            raw = self.joystick.get_axis(idx)
+
+            # Linux 轴映射：-0.5→0.5 对应 -1~1 范围
+            # 中心值映射到 0，半范围 0.5 映射到 ±1.0
+            if USE_LINUX_AXIS_MAP:
+                # A0/A2: 中心 -0.5, 范围 -1.0~0.0 (半范围 0.5)
+                # A1/A3: 中心 +0.5, 范围  0.0~1.0 (半范围 0.5)
+                # A1/A3 方向与预期相反，取反修正
+                center = -0.5 if idx % 2 == 0 else 0.5
+                norm = (raw - center) / 0.5
+                if idx % 2 == 1:  # A1, A3 取反
+                    norm = -norm
+            else:
+                norm = raw
+
+            norm = max(-1.0, min(1.0, norm))
+            val = int(norm * 32767)
             val = max(-32767, min(32767, val))
             buf.extend(struct.pack('<h', val))
 
@@ -1222,6 +1243,11 @@ class RobotRemote:
             for i in range(min(self.joystick_num_axes, 6)):  # 最多显示6个轴
                 try:
                     v = self.joystick.get_axis(i)
+                    if USE_LINUX_AXIS_MAP:
+                        center = -0.5 if i % 2 == 0 else 0.5
+                        v = (v - center) / 0.5
+                        if i % 2 == 1:  # A1, A3 取反
+                            v = -v
                     axis_strs.append(f"A{i}:{v:+.2f}")
                 except:
                     pass

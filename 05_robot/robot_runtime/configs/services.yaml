@@ -14,7 +14,8 @@ services:
 
   remote_control:
     path: ./services/remote_control
-    depends: []
+    depends:
+      - motion
     auto_restart: false
 
   conversation:

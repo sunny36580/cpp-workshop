@@ -96,7 +96,8 @@ private:
     std::vector<std::string> depends_;
     bool auto_restart_ = false;
     ServiceState state_ = ServiceState::STOPPED;
-    int pid_ = 0;
+    pid_t pid_ = 0;
+    pid_t pgid_ = 0;  // 进程组 ID，用于批量清理
     std::string workspace_;
     std::string log_dir_;
 };

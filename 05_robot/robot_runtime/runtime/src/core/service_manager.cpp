@@ -26,6 +26,10 @@ bool ServiceManager::load_config(const std::string& services_yaml) {
 
     auto configs = parse_services(full_path);
     for (auto& cfg : configs) {
+        // 规范化 path: 去掉开头的 ./ 前缀
+        if (cfg.path.size() >= 2 && cfg.path[0] == '.' && cfg.path[1] == '/') {
+            cfg.path = cfg.path.substr(2);
+        }
         auto svc = std::make_shared<ProcessService>(
             cfg.name, cfg.path, cfg.depends, cfg.auto_restart);
         svc->set_workspace(workspace_);

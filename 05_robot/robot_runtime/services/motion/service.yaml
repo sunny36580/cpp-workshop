@@ -1,0 +1,8 @@
+# Motion Service 私有配置
+launch:
+  pkg: module_manager_hub
+  file: manager.launch.py
+
+health:
+  heartbeat_topic: /robot/modules_status
+  timeout_ms: 3000

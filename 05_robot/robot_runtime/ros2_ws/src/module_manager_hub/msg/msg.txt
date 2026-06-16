@@ -1,0 +1,16 @@
+=== ./ModuleStatus.msg ===
+string name
+bool online
+bool running
+float64 last_heartbeat
+string state_msg=== ./Robotarmcontrol.msg ===
+# 机械臂控制消息
+uint32[] motor_ids
+float32[] target_positions
+float32[] target_velocitie
+=== ./msg.txt ===
+=== ./Robotarmstatus.msg ===
+# 机械臂状态消息
+uint32[] motor_ids
+float32[] actual_positions
+float32[] actual_velocities

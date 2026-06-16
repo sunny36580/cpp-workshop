@@ -1,0 +1,24 @@
+# ============================================================================
+# Robot Runtime — Service 注册配置
+# ============================================================================
+# 只存注册信息：名称、路径、依赖、自动重启。
+# Runtime 不感知服务类型，全交给服务自己的 start.sh。
+# ============================================================================
+
+services:
+
+  motion:
+    path: ./services/motion
+    depends: []
+    auto_restart: true
+
+  remote_control:
+    path: ./services/remote_control
+    depends: []
+    auto_restart: false
+
+  conversation:
+    path: ./services/conversation
+    depends:
+      - motion
+    auto_restart: false

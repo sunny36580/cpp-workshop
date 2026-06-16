@@ -1,0 +1,113 @@
+# ========== 模块管理器中枢配置 ==========
+
+# ---- 串口通信配置 ----
+serial:
+  port: "/dev/ttyUSB123"
+  baud_rate: 115200
+
+# ---- ROS2 模块 ----
+# launch_type: ros2_run | ros2_launch
+modules:
+  lower_body:
+    launch_type: "ros2_launch"
+    package: "ll_bringup"
+    node_name: "ll_bringup.launch.py"
+    working_dir: "/X1/ll_control"
+    watch_topic: "/joint_states"
+    watch_type: "sensor_msgs/msg/JointState"
+    enabled: false
+    auto_start: false
+    auto_restart: true
+    timeout_sec: 5.0
+
+  upper_body:
+    launch_type: "ros2_run"
+    package: "arm_function"
+    node_name: "arm_hand_driver_node"
+    working_dir: "/X1/arm"
+    watch_topic: "/robot_arm_status"
+    watch_type: "std_msgs/msg/String"
+    enabled: false
+    auto_start: false
+    auto_restart: true
+    timeout_sec: 5.0
+
+  imu_driver:
+    launch_type: "ros2_run"
+    package: "ros2_xsens_mti_driver"
+    node_name: "xsens_mti_node"
+    watch_topic: "/imu/data"
+    watch_type: "sensor_msgs/msg/Imu"
+    enabled: false
+    auto_start: false
+    auto_restart: true
+    timeout_sec: 5.0
+
+  remote_interface:
+    launch_type: "ros2_run"
+    package: "ll_bringup"
+    node_name: "humanoid_remote_interface"
+    watch_topic: "/hwswitch"
+    watch_type: "std_msgs/msg/Bool"
+    enabled: false
+    auto_start: false
+    auto_restart: true
+    timeout_sec: 5.0
+
+  # USB相机推流（由模块管理器自动启动/监控）
+  usb_camera:
+    launch_type: "ros2_run"
+    package: "module_manager_hub"
+    node_name: "camera_streamer_node"
+    watch_topic: "/camera/status"
+    watch_type: "std_msgs/msg/Bool"
+    enabled: true
+    auto_start: true
+    auto_restart: true
+    timeout_sec: 3.0
+
+  # # 测试用
+  # arm_controller:
+  #   launch_type: "ros2_run"
+  #   package: "module_manager_hub"
+  #   node_name: "test_arm_controller_node"
+  #   watch_topic: "/arm/status"
+  #   watch_type: "module_manager_hub/msg/Robotarmstatus"
+  #   enabled: true
+  #   auto_start: true
+  #   auto_restart: true
+  #   timeout_sec: 1.0
+
+# ---- 指令路由 ----
+cmd_route:
+  arm_control:
+    topic: "/arm/control"
+    msg_type: "Robotarmcontrol"
+
+# ---- 脚本任务（UDP task 触发执行） ----
+# name = task_N 与 UDP cmd_type=2 的 task_id 对应
+script_tasks:
+  task_1:
+    description: "启动机械臂 launch"
+    script: "ros2 launch arm_function arm_hand_launch.py"
+    setup_path: "/home/humanoid02/arm/install/setup.bash"
+    enabled: true
+    enabled: false
+  task_2:
+    description: "启动握手程序 launch"
+    script: "ros2 launch dual_arm_control sim.launch.py"
+    setup_path: "/home/humanoid/ihr-iii-code_integrated/install/setup.bash"
+    enabled: true
+    enabled: false
+  task_3:
+    description: "启动机械臂 launch"
+    script: "ros2 launch arm_function arm_hand_launch.py"
+    setup_path: "/home/humanoid02/arm/install/setup.bash"
+    enabled: true 
+    enabled: false
+  task_4:
+    description: "启动机械臂 launch"
+    script: "ros2 launch arm_function arm_hand_launch.py"
+    setup_path: "/home/humanoid02/arm/install/setup.bash"
+    enabled: true
+    enabled: false

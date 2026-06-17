@@ -322,7 +322,7 @@ class RobotRemote:
         # ========== 界面布局 ==========
         # 主任务配置
         self.main_tasks = [
-            {"id": 1, "name": "1. 语音动作组", "subs": [f"语音段落 {i}" for i in range(1, 16)]},
+            {"id": 1, "name": "1. 语音动作组", "subs": [f"语音段落 {i}" for i in range(1, 31)]},
             {"id": 2, "name": "2. 握手交互",   "subs": ["自动感知模式", "强制握手开启", "强制握手关闭"]},
             {"id": 3, "name": "3. 语音交互",   "subs": ["语音问答交互模式"]},
             {"id": 4, "name": "4. 待机模式",   "subs": ["待机模式（关闭非运控节点）"]},
@@ -332,6 +332,7 @@ class RobotRemote:
         for i, main in enumerate(self.main_tasks):
             for j, _ in enumerate(main["subs"]):
                 self.sub_task_states[f"{i}-{j}"] = False
+        self.voice_scroll_offset = 0  # 语音动作组子任务滚动偏移
 
         # 初始化摇杆
         self._init_joystick()
@@ -950,11 +951,22 @@ class RobotRemote:
             sub_y += 44  # 按钮区域高度偏移
 
         for j, sub_name in enumerate(current_main["subs"]):
-            rect = pygame.Rect(left_x + 10 + main_w + 6, sub_y, sub_w, 28)
+            if is_voice_group:
+                vis_idx = j - self.voice_scroll_offset
+                if vis_idx < 0:
+                    continue
+                max_visible = (panel_h - 50 - 44) // 32
+                if vis_idx >= max_visible:
+                    continue
+                actual_row = sub_y + vis_idx * 32
+            else:
+                actual_row = sub_y + j * 32
+
+            rect = pygame.Rect(left_x + 10 + main_w + 6, actual_row, sub_w, 28)
             if rect.collidepoint(mx, my):
                 # ---- 语音动作组子任务 → WebSocket 发送 ----
                 if is_voice_group:
-                    paragraph_num = j + 1  # 语音段落 1-15
+                    paragraph_num = j + 1  # 语音段落 1-30
                     success = self.send_action_cmd(
                         ActionCmdType.PLAY, para=paragraph_num)
                     if success:
@@ -1120,17 +1132,39 @@ class RobotRemote:
             sub_y += voice_group_action_h
 
         for j, sub_name in enumerate(current_main["subs"]):
+            # 语音动作组：支持滚动
+            if is_voice_group:
+                vis_idx = j - self.voice_scroll_offset
+                if vis_idx < 0:
+                    continue
+                # 计算可见区域
+                max_visible = (ph - 50 - voice_group_action_h - 10) // 32
+                if vis_idx >= max_visible:
+                    continue
+                actual_y = sub_y + vis_idx * 32
+            else:
+                actual_y = sub_y + j * 32
+
             sid = f"{self.current_main_task}-{j}"
             on = self.sub_task_states.get(sid, False) if not is_voice_group else False
             bg = (55, 65, 81)
-            rect = pygame.Rect(px + 10 + main_w + 6, sub_y, sub_w, 28)
+            rect = pygame.Rect(px + 10 + main_w + 6, actual_y, sub_w, 28)
             pygame.draw.rect(self.screen, bg, rect, border_radius=4)
             txt = self.font_sm.render(sub_name, True, (255, 255, 255))
             self.screen.blit(txt, (rect.x + 6, rect.y + 5))
-            # 语音组段落点击即发 UDP，不显示状态灯；其他任务保持状态灯
+            # 语音组段落点击即发 WebSocket，不显示状态灯；其他任务保持状态灯
             if not is_voice_group:
                 dot_color = (34, 197, 94) if on else (107, 114, 128)
                 pygame.draw.circle(self.screen, dot_color, (rect.right - 10, rect.y + 14), 5)
+
+        # 语音动作组：显示滚动提示
+        if is_voice_group:
+            total = len(current_main["subs"])
+            max_visible = (ph - 50 - voice_group_action_h - 10) // 32
+            if total > max_visible:
+                scroll_hint = self.font_sm.render(
+                    f"↑↓ 滚动  {self.voice_scroll_offset + 1}-{min(self.voice_scroll_offset + max_visible, total)}/{total}",
+                    True, (156, 163, 175))
             sub_y += 32
 
         # 底部：系统状态
@@ -1305,11 +1339,26 @@ class RobotRemote:
                         running = False
 
                 # ---- 鼠标点击：左侧任务面板 ----
-
-                # ---- 鼠标点击：左侧任务面板 ----
                 if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                     mx, my = event.pos
                     self._handle_task_click(mx, my)
+
+                # ---- 滚轮事件：语音动作组子任务滚动 ----
+                if event.type == pygame.MOUSEWHEEL:
+                    if self.current_main_task == 0:  # 语音动作组
+                        panel_y = 72
+                        panel_h = self.win_h - panel_y - 100
+                        left_w = int(self.win_w * 0.23)
+                        left_x = 12
+                        sub_x = left_x + 10 + int(left_w * 0.4) + 6
+                        sub_w = left_w - int(left_w * 0.4) - 16
+                        # 检查鼠标是否在子任务区域
+                        mx, my = pygame.mouse.get_pos()
+                        if sub_x <= mx <= sub_x + sub_w and panel_y <= my <= panel_y + panel_h:
+                            max_visible = (panel_h - 50 - 44) // 32  # 可见行数
+                            max_offset = max(0, len(self.main_tasks[0]["subs"]) - max_visible)
+                            self.voice_scroll_offset = max(0, min(max_offset,
+                                self.voice_scroll_offset - event.y))
 
             # ===================== 【摇杆透传降频发送】 =====================
             if self.joystick_connected and self.ser and self.ser.is_open:

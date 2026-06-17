@@ -1,0 +1,11 @@
+# ============================================================================
+# Conversation Service — 语音交互服务
+# ============================================================================
+# 含 WebSocket 服务端（handshake + action_group），支持语音交互。
+# ============================================================================
+name: conversation
+description: 语音交互服务，含 WebSocket 服务端（handshake + action_group）
+type: python
+launch_cmd: python3 ros2_ws/src/remote_control_client/action_group_server.py
+pid_file: run/conversation.pid
+log_path: log/conversation/

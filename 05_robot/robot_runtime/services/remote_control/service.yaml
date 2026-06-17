@@ -1,4 +1,0 @@
-# Remote Control Service 私有配置
-type: python
-scripts:
-  - remote_control_client.py

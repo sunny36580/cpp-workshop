@@ -1,5 +1,0 @@
-# Conversation Service 私有配置
-type: python
-scripts:
-  - handshake_server.py
-  - action_group_server.py

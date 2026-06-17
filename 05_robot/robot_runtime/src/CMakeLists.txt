@@ -1,0 +1,51 @@
+cmake_minimum_required(VERSION 3.16)
+project(robot_runtime VERSION 1.0.0 LANGUAGES CXX)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+find_package(yaml-cpp REQUIRED)
+
+# ============================================================================
+# 源文件
+# ============================================================================
+set(RUNTIME_SOURCES
+    core/runtime.cpp
+    manager/service_manager/service_manager.cpp
+    manager/mode_manager/mode_manager.cpp
+    manager/monitor_manager/monitor_manager.cpp
+    manager/dependency_manager/dependency_manager.cpp
+)
+
+set(RUNTIME_PUBLIC_HEADERS
+    common/type_def.h
+    common/log.h
+    common/config_loader.h
+    common/process_utils.h
+    manager/service_manager/service_manager.h
+    manager/service_manager/service_loader.h
+    manager/mode_manager/mode_manager.h
+    manager/monitor_manager/monitor_manager.h
+    manager/dependency_manager/dependency_manager.h
+    manager/dependency_manager/topological_sort.h
+    core/runtime.h
+)
+
+add_library(runtime STATIC ${RUNTIME_SOURCES} ${RUNTIME_PUBLIC_HEADERS})
+target_include_directories(runtime PUBLIC .)
+target_link_libraries(runtime PUBLIC yaml-cpp pthread)
+
+add_executable(robot
+    cli/main.cpp
+    cli/cmd_service.h
+    cli/cmd_mode.h
+    cli/cmd_monitor.h
+)
+target_link_libraries(robot runtime)
+target_include_directories(robot PRIVATE .)
+
+install(TARGETS robot runtime
+    RUNTIME DESTINATION bin
+    LIBRARY DESTINATION lib
+    ARCHIVE DESTINATION lib
+)

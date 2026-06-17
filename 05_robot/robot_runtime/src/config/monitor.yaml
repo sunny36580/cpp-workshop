@@ -1,0 +1,24 @@
+# ============================================================================
+# 全局监控阈值、自愈策略
+# ============================================================================
+monitor:
+  check_interval: 3.0
+
+  detector:
+    process:
+      enabled: true
+    topic:
+      enabled: false
+    tcp:
+      enabled: false
+    serial:
+      enabled: false
+
+  strategy:
+    restart:
+      max_retries: 3
+      backoff_sec: 5
+    degrade:
+      enabled: true
+    alert:
+      enabled: true

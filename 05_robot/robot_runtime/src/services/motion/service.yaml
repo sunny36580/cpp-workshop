@@ -1,0 +1,11 @@
+# ============================================================================
+# Motion Service — 运控代理服务
+# ============================================================================
+# 对接外置小脑，通过 ROS2 launch 管理运控模块节点。
+# ============================================================================
+name: motion
+description: 运控代理服务，通过 ROS2 launch 管理运控模块节点
+type: ros2
+launch_cmd: ros2 launch module_manager_hub manager.launch.py
+pid_file: run/motion.pid
+log_path: log/motion/

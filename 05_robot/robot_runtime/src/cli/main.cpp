@@ -53,6 +53,7 @@ static void print_usage() {
         "  mode switch <mode>  切换模式\n"
         "  up                  启动默认模式\n"
         "  down                停止所有服务\n"
+        "  daemon              常驻模式（开启TCP远程管控，阻塞运行）\n"
     );
 }
 
@@ -98,7 +99,13 @@ int main(int argc, char* argv[]) {
         return (idx < argc) ? argv[idx] : nullptr;
     };
 
-    if (handle_service_command(runtime, cmd, arg(1))) {
+    // ---- robot daemon / serve ----
+    if (cmd == "daemon" || cmd == "serve") {
+        printf("starting daemon mode...\n");
+        runtime.serve();
+        ok = true;
+    }
+    else if (handle_service_command(runtime, cmd, arg(1))) {
         ok = true;
     }
     else if (handle_mode_command(runtime, cmd, arg(1), arg(2))) {

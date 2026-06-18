@@ -15,6 +15,7 @@ set(RUNTIME_SOURCES
     manager/mode_manager/mode_manager.cpp
     manager/monitor_manager/monitor_manager.cpp
     manager/dependency_manager/dependency_manager.cpp
+    network/tcp_server.cpp
 )
 
 set(RUNTIME_PUBLIC_HEADERS
@@ -29,6 +30,11 @@ set(RUNTIME_PUBLIC_HEADERS
     manager/dependency_manager/dependency_manager.h
     manager/dependency_manager/topological_sort.h
     core/runtime.h
+    network/tcp_server.h
+    network/tcp_server.cpp
+    network/protocol_parser.h
+    network/command_dispatcher.h
+    network/auth_manager.h
 )
 
 add_library(runtime STATIC ${RUNTIME_SOURCES} ${RUNTIME_PUBLIC_HEADERS})

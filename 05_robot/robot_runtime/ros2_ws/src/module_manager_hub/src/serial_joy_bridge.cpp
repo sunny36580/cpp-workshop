@@ -29,8 +29,9 @@ static uint16_t calcCRC16(const uint8_t *data, size_t len)
   return crc;
 }
 
-SerialJoyBridge::SerialJoyBridge(const std::string &name)
-  : Node(name), serial_(io_context_)
+SerialJoyBridge::SerialJoyBridge(const std::string &name,
+                                 const rclcpp::NodeOptions &opts)
+  : Node(name, opts)
 {
   // 尝试从 YAML 配置文件加载串口参数
   this->declare_parameter<std::string>("config_path", "");
@@ -63,33 +64,20 @@ SerialJoyBridge::SerialJoyBridge(const std::string &name)
 
   joy_pub_ = this->create_publisher<sensor_msgs::msg::Joy>("/joy", 10);
 
-  // 打开串口
-  try {
-    serial_.open(serial_port_);
-    serial_.set_option(boost::asio::serial_port_base::baud_rate(serial_baud_));
-    serial_.set_option(boost::asio::serial_port_base::character_size(8));
-    serial_.set_option(boost::asio::serial_port_base::parity(boost::asio::serial_port_base::parity::none));
-    serial_.set_option(boost::asio::serial_port_base::stop_bits(boost::asio::serial_port_base::stop_bits::one));
-    serial_.set_option(boost::asio::serial_port_base::flow_control(boost::asio::serial_port_base::flow_control::none));
-    RCLCPP_INFO(this->get_logger(), "串口已打开: %s @ %d baud", serial_port_.c_str(), serial_baud_);
-  } catch (const std::exception &e) {
-    RCLCPP_ERROR(this->get_logger(), "串口打开失败: %s", e.what());
-    return;
-  }
+  // 设置 SerialReader 回调
+  serial_reader_.setDataCallback(
+      std::bind(&SerialJoyBridge::onSerialData, this,
+                std::placeholders::_1, std::placeholders::_2));
 
-  // 启动异步读取
-  doSerialRead();
-  io_thread_ = std::thread([this]() { io_context_.run(); });
+  // 打开串口（共用 SerialReader）
+  if (!serial_reader_.open(serial_port_, serial_baud_)) {
+    RCLCPP_ERROR(this->get_logger(), "串口打开失败: %s", serial_port_.c_str());
+  }
 }
 
 SerialJoyBridge::~SerialJoyBridge()
 {
-  if (serial_.is_open()) {
-    boost::system::error_code ec;
-    serial_.close(ec);
-  }
-  io_context_.stop();
-  if (io_thread_.joinable()) io_thread_.join();
+  serial_reader_.close();
 }
 
 // =====================================================================
@@ -99,25 +87,10 @@ SerialJoyBridge::~SerialJoyBridge()
 //   CRC 校验范围：SOF 之后的所有数据（从 num_axes 到最后一个按钮）
 // =====================================================================
 
-void SerialJoyBridge::doSerialRead()
+void SerialJoyBridge::onSerialData(const uint8_t *data, size_t len)
 {
-  serial_.async_read_some(boost::asio::buffer(read_buf_),
-    [this](boost::system::error_code ec, std::size_t bytes) {
-      if (ec) {
-        if (rclcpp::ok()) {
-          RCLCPP_WARN(this->get_logger(), "串口读错误: %s", ec.message().c_str());
-          doSerialRead();
-        }
-        return;
-      }
-
-      rx_buf_.insert(rx_buf_.end(), read_buf_.begin(), read_buf_.begin() + bytes);
-
-      // 尝试解析所有完整帧
-      while (tryParseFrame());
-
-      doSerialRead();
-    });
+  rx_buf_.insert(rx_buf_.end(), data, data + len);
+  while (tryParseFrame());
 }
 
 bool SerialJoyBridge::tryParseFrame()

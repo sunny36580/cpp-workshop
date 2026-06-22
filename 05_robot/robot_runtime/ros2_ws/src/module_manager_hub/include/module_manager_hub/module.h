@@ -1,42 +1,11 @@
 #pragma once
 #include <string>
 
-/// 模块启动类型
-enum class LaunchType {
-  ROS2_RUN,        /// ros2 run <package> <node>
-  ROS2_LAUNCH,     /// ros2 launch <package> <launch_file>
-};
-
-/// 脚本任务配置（UDP task 指令触发执行）
-struct ScriptTask {
+/// 被追踪模块的状态（由话题心跳驱动，不再管理进程生命周期）
+struct TrackedModule {
   std::string name;
-  std::string description;
-  std::string script_path;     // .sh 脚本路径（绝对路径）
-  std::string setup_path;      // 启动前 source 的 setup.bash 路径（可选）
-  bool enabled = false;
-};
-
-/// 模块结构
-struct Module {
-  std::string name;
-  LaunchType launch_type = LaunchType::ROS2_RUN;
-
-  // ROS2 相关
-  std::string package_name;     // ROS2 包名
-  std::string node_name;        // 可执行文件名 或 launch 文件名
-  std::string watch_topic;      // 监控的业务话题
-  std::string watch_type;       // 业务话题的消息类型，如 "std_msgs/msg/Bool"
-  std::string working_dir;      // 工作目录（可选）
-
-  // 控制参数
-  bool enabled = false;
-  bool auto_start = false;
-  bool auto_restart = false;
-  double timeout_sec = 5.0;
-
-  // 运行时状态
+  std::string watch_topic;
+  std::string watch_type;
   bool online = false;
-  bool running = false;
   double last_msg_time = 0.0;
-  int pid = 0;                  // 子进程 PID
 };

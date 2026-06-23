@@ -50,8 +50,102 @@ add_executable(robot
 target_link_libraries(robot runtime)
 target_include_directories(robot PRIVATE .)
 
+# ============================================================================
+# Install — 打包到 install/ 目录，colcon 风格
+# ============================================================================
+# 编译后执行:
+#   cmake --install build --prefix install
+# 产物:
+#   install/
+#   ├── bin/robot
+#   ├── lib/libruntime.a
+#   ├── config/*.yaml
+#   ├── services/*/start.sh stop.sh
+#   ├── modes/*.yaml
+#   ├── tools/*.sh
+#   ├── setup.bash
+#   └── start_runtime.sh
+# ============================================================================
+
+# ============================================================================
+# Install — 打包到 install/ 目录，colcon 风格
+# ============================================================================
+# 编译后执行:
+#   cmake --install build --prefix install
+# 产物:
+#   install/
+#   ├── bin/robot
+#   ├── lib/libruntime.a
+#   ├── config/*.yaml
+#   ├── services/          ← 整个目录，含脚本、配置、Python 源码等
+#   ├── modes/*.yaml
+#   ├── tools/*.sh
+#   ├── setup.bash
+#   ├── local_setup.bash
+#   └── start_runtime.sh
+# ============================================================================
+
 install(TARGETS robot runtime
     RUNTIME DESTINATION bin
     LIBRARY DESTINATION lib
     ARCHIVE DESTINATION lib
+)
+
+# 配置文件
+install(DIRECTORY config/ DESTINATION config
+    FILES_MATCHING PATTERN "*.yaml"
+)
+
+# 服务目录 — 整个拷贝（每个服务是一个完整 包 + start/stop.sh）
+install(DIRECTORY services/ DESTINATION services
+    PATTERN "*.pyc" EXCLUDE
+    PATTERN "__pycache__" EXCLUDE
+)
+
+# 模式配置
+install(DIRECTORY modes/ DESTINATION modes
+    FILES_MATCHING PATTERN "*.yaml"
+)
+
+# 辅助工具
+install(DIRECTORY tools/ DESTINATION tools
+    FILES_MATCHING PATTERN "*.sh"
+)
+
+# 启动入口
+install(FILES start_runtime.sh DESTINATION .
+    PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE
+                GROUP_READ GROUP_EXECUTE
+                WORLD_READ WORLD_EXECUTE
+)
+
+# 环境设置
+install(FILES setup.bash local_setup.bash DESTINATION .)
+
+install(DIRECTORY config/ DESTINATION config
+    FILES_MATCHING PATTERN "*.yaml"
+)
+
+install(DIRECTORY services/ DESTINATION services
+    FILES_MATCHING PATTERN "*.sh"
+)
+
+install(DIRECTORY modes/ DESTINATION modes
+    FILES_MATCHING PATTERN "*.yaml"
+)
+
+install(DIRECTORY tools/ DESTINATION tools
+    FILES_MATCHING PATTERN "*.sh"
+)
+
+install(FILES start_runtime.sh DESTINATION .
+    PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE
+                GROUP_READ GROUP_EXECUTE
+                WORLD_READ WORLD_EXECUTE
+)
+
+install(FILES
+    setup.bash
+    local_setup.bash
+DESTINATION .
 )

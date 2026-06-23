@@ -70,5 +70,10 @@ install(DIRECTORY launch config
   DESTINATION share/${PROJECT_NAME}
 )
 
+# 启动/停止脚本（安装到 workspace 根目录 install/）
+install(CODE "file(INSTALL \"${CMAKE_CURRENT_SOURCE_DIR}/start.sh\" \"${CMAKE_CURRENT_SOURCE_DIR}/stop.sh\"
+       DESTINATION \"${CMAKE_INSTALL_PREFIX}/..\"
+       TYPE PROGRAM)")
+
 
 ament_package()

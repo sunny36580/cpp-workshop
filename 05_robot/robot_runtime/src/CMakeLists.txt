@@ -14,6 +14,7 @@ set(RUNTIME_SOURCES
     manager/service_manager/service_manager.cpp
     manager/mode_manager/mode_manager.cpp
     manager/monitor_manager/monitor_manager.cpp
+    manager/monitor_manager/detector/file_heartbeat_detector.cpp
     manager/dependency_manager/dependency_manager.cpp
     network/tcp_server.cpp
 )

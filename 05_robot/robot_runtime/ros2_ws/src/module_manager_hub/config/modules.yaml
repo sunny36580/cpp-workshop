@@ -1,32 +1,28 @@
-# ========== 串口 ↔ ROS 桥接配置 ==========
-# 模块管理器不再管理进程生命周期（由 runtime 统一管理），
-# 仅保留串口通信、指令路由和话题心跳追踪。
+# ========== module_manager_hub 配置 ==========
+# 当前运行：CameraStreamer + HeartbeatCollector
+# ModuleManager/SerialJoyBridge 阶段二启用
 
-# ---- 串口通信配置（机器人遥控协议，32 字节固定帧） ----
-serial:
-  port: "/dev/ttyUSB123"
-  baud_rate: 115200
-
-# ---- 话题心跳追踪（仅用于串口状态位图反馈，不控制进程） ----
-modules:
-  lower_body:
-    watch_topic: "/joint_states"
-    watch_type: "sensor_msgs/msg/JointState"
-  upper_body:
-    watch_topic: "/robot_arm_status"
-    watch_type: "std_msgs/msg/String"
-  imu_driver:
-    watch_topic: "/imu/data"
-    watch_type: "sensor_msgs/msg/Imu"
-  remote_interface:
-    watch_topic: "/hwswitch"
-    watch_type: "std_msgs/msg/Bool"
-  usb_camera:
-    watch_topic: "/camera/status"
-    watch_type: "std_msgs/msg/Bool"
-
-# ---- 指令路由 ----
-cmd_route:
-  arm_control:
-    topic: "/arm/control"
-    msg_type: "Robotarmcontrol"
+# ---- 心跳汇聚配置 ----
+heartbeat:
+  # 心跳文件目录（Runtime MonitorManager 读取）
+  heartbeat_dir: "/tmp/module_heartbeats"
+  # 超时阈值（秒）
+  timeout_sec: 8.0
+  # 被监控的服务（svc_id 为二进制 UDP 协议的服务 ID）
+  targets:
+    - name: camera_streamer
+      svc_id: 1
+      topic: "/camera/status"
+      msg_type: "std_msgs/msg/Bool"
+    - name: motion_service
+      svc_id: 2
+      topic: "/robot/motion/heartbeat"
+      msg_type: "std_msgs/msg/String"
+    - name: remote_control
+      svc_id: 3
+      topic: "/robot/remote_control/heartbeat"
+      msg_type: "std_msgs/msg/String"
+    - name: heartbeat_collector
+      svc_id: 4
+      topic: "/robot/collector/heartbeat"
+      msg_type: "std_msgs/msg/String"

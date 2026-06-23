@@ -29,13 +29,14 @@ rosidl_generate_interfaces(${PROJECT_NAME}
 
 include_directories(include)
 
-# 编译可执行文件（三个 node 在同一进程内由 MultiThreadedExecutor 管理）
+# 编译可执行文件（SerialJoyBridge + CameraStreamer + HeartbeatCollector）
+# ModuleManager 暂不编译（串口遥控协议阶段二启用，源文件保留）
 add_executable(module_manager_node
   src/main.cpp
-  src/module_manager_node.cpp
   src/serial_joy_bridge.cpp
   src/serial_reader.cpp
   src/usb_camera_sender_node.cpp
+  src/heartbeat_collector.cpp
 )
 
 # OpenCV / FFmpeg 依赖（CameraStreamer 使用）
@@ -48,12 +49,8 @@ ament_target_dependencies(module_manager_node
   rclcpp
   std_msgs
   sensor_msgs
-  geometry_msgs
   cv_bridge
 )
-
-# 链接自定义消息 Robotarmcontrol
-rosidl_get_typesupport_target(cpp_typesupport_target ${PROJECT_NAME} "rosidl_typesupport_cpp")
 
 target_include_directories(module_manager_node PRIVATE ${FFMPEG_INCLUDE_DIRS})
 target_link_libraries(module_manager_node
@@ -61,7 +58,6 @@ target_link_libraries(module_manager_node
   ${Boost_LIBRARIES}
   ${OpenCV_LIBRARIES}
   ${FFMPEG_LIBRARIES}
-  ${cpp_typesupport_target}
 )
 
 # 安装到bin目录（三个 node 全部合并至 module_manager_node 同一进程）

@@ -4,6 +4,12 @@
 monitor:
   check_interval: 3.0
 
+  # ---- 文件心跳检测（监测业务进程是否卡死） ----
+  file_heartbeat:
+    enabled: true
+    dir: "/tmp/runtime_hb"
+    timeout_sec: 8.0
+
   detector:
     process:
       enabled: true

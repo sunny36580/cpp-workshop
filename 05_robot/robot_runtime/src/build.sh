@@ -20,7 +20,7 @@ echo "=========================================="
 # ---- 1. 编译 runtime 框架 ----
 echo ""
 echo "[1/2] Building runtime..."
-cmake -S "$SCRIPT_DIR" -B "$BUILD_DIR" -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE:-Release}
+cmake -S "$SCRIPT_DIR" -B "$BUILD_DIR" -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE:-Release} -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 cmake --build "$BUILD_DIR" -j"$(nproc)"
 echo "[1/2] runtime → $BUILD_DIR/robot"
 

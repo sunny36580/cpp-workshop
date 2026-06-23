@@ -47,6 +47,8 @@ bool Runtime::init() {
         dm_->add_dependency(name, svc->depends());
     }
 
+    // 加载监控配置（含文件心跳检测）
+    mon_->load_config(config_dir_ + "/monitor.yaml");
     mon_->start();
     printf("[Runtime] initialized\n");
 

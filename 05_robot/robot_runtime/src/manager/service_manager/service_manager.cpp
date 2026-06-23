@@ -115,8 +115,8 @@ bool ProcessService::is_alive() const {
 ServiceStatus ProcessService::status() const {
     ServiceStatus s;
     s.name        = name_;
-    s.description = meta_.description;
-    s.type        = meta_.type;
+    s.description = cfg_.description;
+    s.type        = cfg_.type;
     s.state       = state_;
     s.pid         = is_alive() ? pid_ : 0;
     s.alive       = is_alive();
@@ -148,11 +148,7 @@ bool ServiceManager::load_config(const std::string& services_yaml) {
             cfg.name, cfg.path, cfg.depends, cfg.auto_restart);
         svc->set_workspace(workspace_);
         svc->set_log_dir(log_dir_);
-
-        std::string svc_dir = workspace_ + "/" + cfg.path;
-        ServiceMeta meta = parse_service_meta(svc_dir + "/service.yaml");
-        svc->set_meta(meta);
-
+        svc->set_config(cfg);
         register_service(svc);
     }
 

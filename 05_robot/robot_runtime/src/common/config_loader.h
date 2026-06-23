@@ -8,38 +8,19 @@
 namespace robot_runtime {
 
 // ============================================================================
-// ServiceMeta — 服务目录内 service.yaml 规范
+// ServiceConfig — 服务注册配置（来自 config/services.yaml）
 // ============================================================================
-struct ServiceMeta {
+// 所有服务元信息统一放在 config/services.yaml 中，每个服务目录下不再维护
+// 独立的 service.yaml 文件，避免配置分散、信息不一致。
+// ============================================================================
+struct ServiceConfig {
     std::string name;
+    std::string path;
     std::string description;
     std::string type;         // ros2, python, cpp_binary, external
     std::string launch_cmd;
     std::string pid_file;
     std::string log_path;
-};
-
-inline ServiceMeta parse_service_meta(const std::string& filepath) {
-    ServiceMeta meta;
-    try {
-        auto root = YAML::LoadFile(filepath);
-        meta.name        = root["name"].as<std::string>("");
-        meta.description = root["description"].as<std::string>("");
-        meta.type        = root["type"].as<std::string>("ros2");
-        meta.launch_cmd  = root["launch_cmd"].as<std::string>("");
-        meta.pid_file    = root["pid_file"].as<std::string>("");
-        meta.log_path    = root["log_path"].as<std::string>("");
-    } catch (const std::exception&) {
-    }
-    return meta;
-}
-
-// ============================================================================
-// ServiceConfig — 服务注册配置
-// ============================================================================
-struct ServiceConfig {
-    std::string name;
-    std::string path;
     std::vector<std::string> depends;
     bool auto_restart = false;
 };
@@ -57,8 +38,13 @@ inline std::vector<ServiceConfig> parse_services(const std::string& filepath) {
 
     for (const auto& entry : svc_cfg) {
         ServiceConfig cfg;
-        cfg.name = entry.first.as<std::string>();
-        cfg.path  = entry.second["path"].as<std::string>("");
+        cfg.name        = entry.first.as<std::string>();
+        cfg.path        = entry.second["path"].as<std::string>("");
+        cfg.description = entry.second["description"].as<std::string>("");
+        cfg.type        = entry.second["type"].as<std::string>("ros2");
+        cfg.launch_cmd  = entry.second["launch_cmd"].as<std::string>("");
+        cfg.pid_file    = entry.second["pid_file"].as<std::string>("");
+        cfg.log_path    = entry.second["log_path"].as<std::string>("");
         cfg.auto_restart = entry.second["auto_restart"].as<bool>(false);
 
         if (entry.second["depends"]) {

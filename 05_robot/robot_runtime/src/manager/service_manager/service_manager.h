@@ -80,13 +80,13 @@ public:
 
     void set_workspace(std::string ws) { workspace_ = std::move(ws); }
     void set_log_dir(std::string dir)  { log_dir_   = std::move(dir); }
-    void set_meta(ServiceMeta meta)    { meta_      = std::move(meta); }
+    void set_config(ServiceConfig cfg) { cfg_ = std::move(cfg); }
 
     const std::string& name()    const { return name_; }
     const std::string& path()    const { return path_; }
     const std::vector<std::string>& depends() const { return depends_; }
     bool auto_restart() const { return auto_restart_; }
-    const ServiceMeta& meta() const { return meta_; }
+    const ServiceConfig& config() const { return cfg_; }
 
     ServiceStatus status() const;
 
@@ -100,7 +100,7 @@ private:
     ServiceState state_ = ServiceState::STOPPED;
     pid_t pid_ = 0;
     pid_t pgid_ = 0;
-    ServiceMeta meta_;
+    ServiceConfig cfg_;
     std::string workspace_;
     std::string log_dir_;
 };

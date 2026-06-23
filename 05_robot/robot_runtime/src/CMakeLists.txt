@@ -25,7 +25,6 @@ set(RUNTIME_PUBLIC_HEADERS
     common/config_loader.h
     common/process_utils.h
     manager/service_manager/service_manager.h
-    manager/service_manager/service_loader.h
     manager/mode_manager/mode_manager.h
     manager/monitor_manager/monitor_manager.h
     manager/dependency_manager/dependency_manager.h

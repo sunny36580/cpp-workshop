@@ -67,3 +67,6 @@ venv/
 *.bag
 *.db
 *.rosinstall
+
+# service文件夹相关
+services/

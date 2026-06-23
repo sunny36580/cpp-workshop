@@ -5,7 +5,7 @@
 # ---- 心跳汇聚配置 ----
 heartbeat:
   # 心跳文件目录（Runtime MonitorManager 读取）
-  heartbeat_dir: "/tmp/module_heartbeats"
+  heartbeat_dir: "/tmp/runtime_hb"
   # 超时阈值（秒）
   timeout_sec: 8.0
   # 被监控的服务（svc_id 为二进制 UDP 协议的服务 ID）
@@ -24,5 +24,9 @@ heartbeat:
       msg_type: "std_msgs/msg/String"
     - name: heartbeat_collector
       svc_id: 4
+      topic: "/robot/collector/heartbeat"
+      msg_type: "std_msgs/msg/String"
+    - name: module_manager_hub
+      svc_id: 5
       topic: "/robot/collector/heartbeat"
       msg_type: "std_msgs/msg/String"

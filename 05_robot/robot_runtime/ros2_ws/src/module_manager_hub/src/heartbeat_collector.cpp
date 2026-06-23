@@ -29,7 +29,7 @@ static void buildCRC32Table() {
   crc32_init = true;
 }
 
-static uint32_t crc32(const uint8_t *data, size_t len) {
+uint32_t HeartbeatCollector::calcCRC32(const uint8_t *data, size_t len) {
   if (!crc32_init) buildCRC32Table();
   uint32_t c = 0xFFFFFFFF;
   for (size_t i = 0; i < len; i++) {
@@ -144,7 +144,9 @@ void HeartbeatCollector::loadConfig(const YAML::Node &root)
 void HeartbeatCollector::writeHeartbeatFile(const std::string &name, double timestamp)
 {
   if (heartbeat_dir_.empty()) return;
-  fs::create_directories(heartbeat_dir_);
+  try {
+    fs::create_directories(heartbeat_dir_);
+  } catch (...) { return; }
 
   std::string tmp_path = heartbeat_dir_ + "/." + name + ".tmp";
   std::string dst_path = heartbeat_dir_ + "/" + name;
@@ -156,8 +158,12 @@ void HeartbeatCollector::writeHeartbeatFile(const std::string &name, double time
     f << timestamp << std::endl;
   }
 
-  // mv 原子替换
-  fs::rename(tmp_path, dst_path);
+  // POSIX rename() 原子替换，目标已存在时自动覆盖
+  if (::rename(tmp_path.c_str(), dst_path.c_str()) != 0) {
+    RCLCPP_WARN(this->get_logger(), "心跳文件写入失败 %s: %s",
+                dst_path.c_str(), std::strerror(errno));
+    fs::remove(tmp_path);
+  }
 }
 
 // =====================================================================
@@ -200,7 +206,7 @@ void HeartbeatCollector::sendUdpReport()
   }
 
   // 计算 CRC32（覆盖整个包）
-  hdr->crc32 = htonl(crc32(pkt.data(), pkt.size()));
+  hdr->crc32 = htonl(calcCRC32(pkt.data(), pkt.size()));
 
   struct sockaddr_in addr{};
   addr.sin_family = AF_INET;

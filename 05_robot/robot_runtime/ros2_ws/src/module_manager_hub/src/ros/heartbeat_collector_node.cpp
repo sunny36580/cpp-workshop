@@ -42,11 +42,7 @@ HeartbeatCollectorNode::HeartbeatCollectorNode(const std::string &name,
     core_.targets().push_back(t);
   }
 
-  // 自身心跳发布
-  self_hb_pub_ = this->create_publisher<std_msgs::msg::String>(
-      "/robot/collector/heartbeat", 10);
-
-  // 为每个 target 建立订阅
+  // 为每个外部 target 建立话题订阅
   for (auto &t : core_.targets()) {
     if (t.topic.empty()) continue;
     try {
@@ -64,10 +60,6 @@ HeartbeatCollectorNode::HeartbeatCollectorNode(const std::string &name,
 
   // UDP 初始化
   core_.initUdpSocket();
-
-  // 定时 1s 发布自身心跳
-  self_hb_timer_ = this->create_wall_timer(1s,
-      std::bind(&HeartbeatCollectorNode::publishSelfHeartbeat, this));
 
   // 定时 2s 检查超时
   check_timer_ = this->create_wall_timer(2s,
@@ -113,23 +105,6 @@ void HeartbeatCollectorNode::loadConfig(const YAML::Node &root)
   }
 
   core_.loadConfig(heartbeat_dir, timeout_sec, udp_host, udp_port, targets);
-}
-
-// 节点层心跳接收
-void HeartbeatCollectorNode::onHeartbeat(const std::string &name)
-{
-  core_.onHeartbeat(name, this->now().seconds());
-}
-
-// 自身心跳发布
-void HeartbeatCollectorNode::publishSelfHeartbeat()
-{
-  auto msg = std_msgs::msg::String();
-  msg.data = "alive";
-  self_hb_pub_->publish(msg);
-
-  // 更新自身在线状态
-  onHeartbeat("heartbeat_collector");
 }
 
 // 超时检测

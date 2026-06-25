@@ -28,7 +28,7 @@ import websockets
 
 async def handle_client(websocket):
     """处理单个 WebSocket 客户端"""
-    print(f"[WS] 客户端已连接: {websocket.remote_address}")
+    print(f"[WS] 客户端已连接: {websocket.remote_address}", flush=True)
 
     try:
         async for raw in websocket:
@@ -38,26 +38,34 @@ async def handle_client(websocket):
 
                 if cmd == "play":
                     para = msg.get("para", 0)
-                    print(f"[WS] 指令: play para={para}")
+                    print(f"[WS] 指令: play para={para}", flush=True)
 
                     # 回复 ACK
                     await websocket.send(json.dumps({"event": "ack"}))
+                    print(f"[WS] -> ack 已发送", flush=True)
 
                     # === 在这里执行播放逻辑 ===
                     # await execute_play(para)
 
+                    print(f"[WS] 执行中 (模拟1秒)...", flush=True)
                     await asyncio.sleep(1.0)       # 模拟耗时
+                    print(f"[WS] 执行完毕，发送 completed", flush=True)
                     await websocket.send(json.dumps({"event": "completed"}))
+                    print(f"[WS] -> completed 已发送", flush=True)
 
                 elif cmd == "reset":
-                    print("[WS] 指令: reset")
+                    print("[WS] 指令: reset", flush=True)
                     await websocket.send(json.dumps({"event": "ack"}))
+                    print(f"[WS] -> ack 已发送", flush=True)
 
                     # === 在这里执行归位逻辑 ===
                     # await execute_reset()
 
+                    print(f"[WS] 执行中 (模拟0.5秒)...", flush=True)
                     await asyncio.sleep(0.5)
+                    print(f"[WS] 执行完毕，发送 completed", flush=True)
                     await websocket.send(json.dumps({"event": "completed"}))
+                    print(f"[WS] -> completed 已发送", flush=True)
 
                 else:
                     await websocket.send(json.dumps({
@@ -70,15 +78,15 @@ async def handle_client(websocket):
                 }))
 
     except websockets.ConnectionClosed:
-        print(f"[WS] 客户端断开: {websocket.remote_address}")
+        print(f"[WS] 客户端断开: {websocket.remote_address}", flush=True)
     except Exception as e:
-        print(f"[WS] 错误: {e}")
+        print(f"[WS] 错误: {e}", flush=True)
 
 
 async def main():
-    host = "0.0.0.0"
+    host = "127.0.0.1"
     ws_port = 9998
-    print(f"[WS] 动作组服务启动: ws://{host}:{ws_port}/action")
+    print(f"[WS] 动作组服务启动: ws://{host}:{ws_port}/action", flush=True)
 
     async with websockets.serve(
         handle_client, host, ws_port,

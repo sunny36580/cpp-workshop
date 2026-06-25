@@ -2,7 +2,6 @@
 #include <cv_bridge/cv_bridge.h>
 #include <opencv2/opencv.hpp>
 #include <sensor_msgs/msg/image.hpp>
-#include <signal.h>
 
 using namespace std::chrono_literals;
 
@@ -27,10 +26,6 @@ CameraStreamerNode::CameraStreamerNode(const std::string& node_name,
           case 2: RCLCPP_ERROR(this->get_logger(), "%s", msg.c_str()); break;
         }
       });
-
-  heartbeat_pub_ = this->create_publisher<std_msgs::msg::Bool>("/camera/status", 10);
-  heartbeat_timer_ = this->create_wall_timer(
-      500ms, std::bind(&CameraStreamerNode::publishHeartbeat, this));
 
   image_sub_ = this->create_subscription<sensor_msgs::msg::Image>(
       image_topic_, rclcpp::SensorDataQoS(),
@@ -64,11 +59,4 @@ void CameraStreamerNode::imageCallback(const sensor_msgs::msg::Image::SharedPtr 
     RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
                          "cv_bridge failed: %s", e.what());
   }
-}
-
-void CameraStreamerNode::publishHeartbeat()
-{
-  auto msg = std_msgs::msg::Bool();
-  msg.data = true;
-  heartbeat_pub_->publish(msg);
 }

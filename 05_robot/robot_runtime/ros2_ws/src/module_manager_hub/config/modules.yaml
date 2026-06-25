@@ -3,17 +3,15 @@
 # ModuleManager/SerialJoyBridge 阶段二启用
 
 # ---- 心跳汇聚配置 ----
+# 注意：同进程内的服务（camera_streamer / serial_joy_bridge / module_manager）
+# 不需要心跳监控——进程活着就是全部活着。只监控外部独立进程。
 heartbeat:
   # 心跳文件目录（Runtime MonitorManager 读取）
   heartbeat_dir: "/tmp/runtime_hb"
   # 超时阈值（秒）
   timeout_sec: 8.0
-  # 被监控的服务（svc_id 为二进制 UDP 协议的服务 ID）
+  # 被监控的外部服务（svc_id 为二进制 UDP 协议的服务 ID）
   targets:
-    - name: camera_streamer
-      svc_id: 1
-      topic: "/camera/status"
-      msg_type: "std_msgs/msg/Bool"
     - name: motion_service
       svc_id: 2
       topic: "/robot/motion/heartbeat"
@@ -21,12 +19,4 @@ heartbeat:
     - name: remote_control
       svc_id: 3
       topic: "/robot/remote_control/heartbeat"
-      msg_type: "std_msgs/msg/String"
-    - name: heartbeat_collector
-      svc_id: 4
-      topic: "/robot/collector/heartbeat"
-      msg_type: "std_msgs/msg/String"
-    - name: module_manager_hub
-      svc_id: 5
-      topic: "/robot/collector/heartbeat"
       msg_type: "std_msgs/msg/String"

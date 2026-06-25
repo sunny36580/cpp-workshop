@@ -80,10 +80,11 @@ void HeartbeatCollectorCore::writeHeartbeatFile(const std::string &name, double 
   std::string tmp_path = heartbeat_dir_ + "/." + name + ".tmp";
   std::string dst_path = heartbeat_dir_ + "/" + name;
 
-  // 写临时文件
+  // 写临时文件（用 std::setprecision 保留足够精度）
   {
     std::ofstream f(tmp_path);
     if (!f) return;
+    f.precision(15);
     f << timestamp << std::endl;
   }
 

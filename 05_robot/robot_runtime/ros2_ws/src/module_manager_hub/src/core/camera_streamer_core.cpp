@@ -91,10 +91,10 @@ bool CameraStreamerCore::initEncoder(int width, int height, int bitrate_kbps)
 
 void CameraStreamerCore::cleanupEncoder()
 {
-    if (enc_pkt_) av_packet_free(&enc_pkt_);
-    if (enc_frame_) av_frame_free(&enc_frame_);
-    if (sws_ctx_) sws_freeContext(sws_ctx_);
-    if (enc_ctx_) avcodec_free_context(&enc_ctx_);
+    if (enc_pkt_) { av_packet_free(&enc_pkt_); enc_pkt_ = nullptr; }
+    if (enc_frame_) { av_frame_free(&enc_frame_); enc_frame_ = nullptr; }
+    if (sws_ctx_) { sws_freeContext(sws_ctx_); sws_ctx_ = nullptr; }
+    if (enc_ctx_) { avcodec_free_context(&enc_ctx_); enc_ctx_ = nullptr; }
     encoder_ready_ = false;
 }
 

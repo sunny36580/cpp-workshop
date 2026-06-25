@@ -80,6 +80,29 @@ target_link_libraries(module_manager_node
 rosidl_get_typesupport_target(cpp_typesupport_target ${PROJECT_NAME} "rosidl_typesupport_cpp")
 target_link_libraries(module_manager_node "${cpp_typesupport_target}")
 
+# =====================================================================
+# 纯 C++ 单测可执行文件（无 ROS 依赖，仅链接 core 库）
+# =====================================================================
+add_executable(test_joy_bridge_core
+  test/test_joy_bridge_core.cpp
+)
+target_link_libraries(test_joy_bridge_core module_manager_core)
+
+add_executable(test_camera_streamer_core
+  test/test_camera_streamer_core.cpp
+)
+target_link_libraries(test_camera_streamer_core module_manager_core)
+
+add_executable(test_heartbeat_core
+  test/test_heartbeat_core.cpp
+)
+target_link_libraries(test_heartbeat_core module_manager_core)
+
+add_executable(test_module_manager_core
+  test/test_module_manager_core.cpp
+)
+target_link_libraries(test_module_manager_core module_manager_core)
+
 # 安装
 install(TARGETS
   module_manager_node

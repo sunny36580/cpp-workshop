@@ -43,7 +43,12 @@ std::vector<JoyFrameData> JoyBridgeCore::feedData(const uint8_t* data, size_t le
 
   JoyFrameData frame;
   while (tryParseFrame(frame)) {
-    results.push_back(std::move(frame));
+    // tryParseFrame 返回 true 有两种情况：
+    //   a) 成功解析一帧（frame 有内容）→ 加入 results
+    //   b) CRC/校验失败，跳过字节继续搜索（frame 仍为空）→ 不加入
+    if (!frame.axes.empty() || !frame.buttons.empty()) {
+      results.push_back(std::move(frame));
+    }
     frame = JoyFrameData{};
   }
 

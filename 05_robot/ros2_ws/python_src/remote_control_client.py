@@ -16,7 +16,7 @@ ANGULAR_SPEED_MAX = 1.0  # 运控节点角速度上限 (rad/s)
 CMD_SEND_RATE = 7       # 运动指令发送频率(Hz)
 
 # 相机推流配置
-CAMERA_IP = "192.168.9.253"   # 机端IP地址
+CAMERA_IP = "192.168.1.102"   # 机端IP地址
 CAMERA_PORT = 8888             # TCP 推流端口
 
 # 串口配置（与 C++ 模块管理器一致）
@@ -53,7 +53,7 @@ class CmdType(Enum):
 # ====================== WebSocket 动作组协议 ======================
 # 通过 WebSocket 向局域网内的动作组服务发送 play/reset 指令
 # 协议为 JSON，支持双向通信：发指令、收 ACK + 事件推送
-WS_ACTION_URI = "ws://192.168.9.253:9998/action"  # 动作组 WebSocket 服务
+WS_ACTION_URI = "ws://127.0.0.1:9998/action"  # 动作组 WebSocket 服务
 WS_CONNECT_TIMEOUT = 3.0   # 连接超时 (秒)
 WS_CMD_TIMEOUT = 3.0       # 指令等待 ACK 超时 (秒)
 
@@ -63,7 +63,7 @@ class ActionCmdType(Enum):
     RESET = "reset" # 动作归位
 
 # ====================== WebSocket 握手协议 ======================
-WS_HANDSHAKE_URI = "ws://192.168.9.253:9999/handshake"
+WS_HANDSHAKE_URI = "ws://192.168.1.102:9999/handshake"
 
 class HandshakeCmdType(Enum):
     """握手交互指令"""
@@ -333,6 +333,11 @@ class RobotRemote:
             for j, _ in enumerate(main["subs"]):
                 self.sub_task_states[f"{i}-{j}"] = False
         self.voice_scroll_offset = 0  # 语音动作组子任务滚动偏移
+
+        # 语音段落状态跟踪 (para_num -> "idle"|"sending"|"playing"|"completed"|"error")
+        self.voice_para_states = {}      # 段落编号 -> 状态
+        self.voice_para_state_time = {}  # 段落编号 -> 状态变更时间戳
+        self.current_voice_para = None   # 当前正在播放的段落编号
 
         # 初始化摇杆
         self._init_joystick()
@@ -764,6 +769,10 @@ class RobotRemote:
                         # 播放完成通知
                         elif event == "completed":
                             self.action_playing = False
+                            # 更新对应段落状态为已完成
+                            if self.current_voice_para is not None:
+                                self.voice_para_states[self.current_voice_para] = "completed"
+                                self.voice_para_state_time[self.current_voice_para] = time.time()
                             self.add_log("动作组播放完成", "success")
                             print("[WS] 动作组播放完成")
                         # 错误通知
@@ -967,13 +976,28 @@ class RobotRemote:
                 # ---- 语音动作组子任务 → WebSocket 发送 ----
                 if is_voice_group:
                     paragraph_num = j + 1  # 语音段落 1-30
+                    # 如果该段落正在发送或播放中，不重复发送
+                    cur_state = self.voice_para_states.get(paragraph_num, "idle")
+                    if cur_state in ("sending", "playing"):
+                        self.last_tip = f"语音段落 {paragraph_num} 正在播放中"
+                        return
+                    # 立即标记为发送中并刷新画面
+                    self.voice_para_states[paragraph_num] = "sending"
+                    self.voice_para_state_time[paragraph_num] = time.time()
+                    self.current_voice_para = paragraph_num
+                    self.draw_ui()
+                    pygame.display.flip()
                     success = self.send_action_cmd(
                         ActionCmdType.PLAY, para=paragraph_num)
                     if success:
+                        self.voice_para_states[paragraph_num] = "playing"
+                        self.voice_para_state_time[paragraph_num] = time.time()
                         self.action_playing = True
                         self.action_resetting = False
                         self.last_tip = f"语音段落 {paragraph_num}"
                     else:
+                        self.voice_para_states[paragraph_num] = "error"
+                        self.voice_para_state_time[paragraph_num] = time.time()
                         self.last_tip = f"语音段落 {paragraph_num} 发送失败"
                 else:
                     # ---- 握手交互子任务 → WebSocket 发送 ----
@@ -999,7 +1023,6 @@ class RobotRemote:
                         else:
                             self.add_log(f"已关闭子任务: {sub_name}", "info")
                 return
-            sub_y += 32
 
         # ---- 语音动作组按钮点击（在子任务区域顶部）----
         if is_voice_group:
@@ -1112,7 +1135,7 @@ class RobotRemote:
             pygame.draw.rect(self.screen, play_color, play_rect, border_radius=6)
             if self.action_playing:
                 pygame.draw.rect(self.screen, (74, 222, 128), play_rect, 2, border_radius=6)
-            play_txt = self.font_sm.render("▶ Play", True, (255, 255, 255))
+            play_txt = self.font_sm.render("Play", True, (255, 255, 255))
             self.screen.blit(play_txt, (play_rect.x + 6, play_rect.y + 6))
 
             # Reset 按钮
@@ -1121,7 +1144,7 @@ class RobotRemote:
             pygame.draw.rect(self.screen, reset_color, reset_rect, border_radius=6)
             if self.action_resetting:
                 pygame.draw.rect(self.screen, (252, 165, 165), reset_rect, 2, border_radius=6)
-            reset_txt = self.font_sm.render("⟳ Reset", True, (255, 255, 255))
+            reset_txt = self.font_sm.render("Reset", True, (255, 255, 255))
             self.screen.blit(reset_txt, (reset_rect.x + 6, reset_rect.y + 6))
 
             # 按钮下分隔线
@@ -1147,13 +1170,99 @@ class RobotRemote:
 
             sid = f"{self.current_main_task}-{j}"
             on = self.sub_task_states.get(sid, False) if not is_voice_group else False
-            bg = (55, 65, 81)
             rect = pygame.Rect(px + 10 + main_w + 6, actual_y, sub_w, 28)
-            pygame.draw.rect(self.screen, bg, rect, border_radius=4)
-            txt = self.font_sm.render(sub_name, True, (255, 255, 255))
-            self.screen.blit(txt, (rect.x + 6, rect.y + 5))
-            # 语音组段落点击即发 WebSocket，不显示状态灯；其他任务保持状态灯
-            if not is_voice_group:
+
+            if is_voice_group:
+                # ---- 语音段落：根据状态着色 + 进度条 ----
+                paragraph_num = j + 1
+                pstate = self.voice_para_states.get(paragraph_num, "idle")
+
+                # 根据状态选择背景色和边框
+                if pstate == "sending":
+                    bg = (146, 106, 30)       # 琥珀色-发送中
+                    border = (250, 204, 21)   # 黄色脉冲边框
+                elif pstate == "playing":
+                    bg = (30, 64, 175)        # 蓝色-播放中
+                    border = (96, 165, 250)   # 蓝色边框
+                elif pstate == "completed":
+                    bg = (21, 128, 61)        # 绿色-已完成
+                    border = (74, 222, 128)
+                elif pstate == "error":
+                    bg = (185, 28, 28)        # 红色-错误
+                    border = (252, 165, 165)
+                else:
+                    bg = (55, 65, 81)         # 灰色-空闲
+                    border = None
+
+                pygame.draw.rect(self.screen, bg, rect, border_radius=4)
+                if border is not None:
+                    pygame.draw.rect(self.screen, border, rect, 2, border_radius=4)
+
+                # 播放中/发送中：绘制底部进度条动画
+                if pstate in ("sending", "playing"):
+                    now = time.time()
+                    start_t = self.voice_para_state_time.get(paragraph_num, now)
+                    elapsed = now - start_t
+                    if pstate == "sending":
+                        # 发送中：滚动条纹（indeterminate progress）
+                        phase = (elapsed * 2.0) % 1.0  # 每0.5秒一个周期
+                        bar_w = int(rect.w * 0.3)
+                        bar_x = rect.x + int((rect.w - bar_w) * phase)
+                        bar_rect = pygame.Rect(bar_x, rect.bottom - 4, bar_w, 3)
+                        pygame.draw.rect(self.screen, (250, 204, 21), bar_rect, border_radius=2)
+                    else:
+                        # 播放中：进度条从左到右填充（~8秒循环）
+                        progress = min(elapsed / 8.0, 1.0)
+                        bar_w = int(rect.w * progress)
+                        if bar_w > 0:
+                            bar_rect = pygame.Rect(rect.x, rect.bottom - 4, bar_w, 3)
+                            pygame.draw.rect(self.screen, (96, 165, 250), bar_rect, border_radius=2)
+
+                # 右侧状态图标
+                if pstate == "sending":
+                    dot_color = (250, 204, 21)      # 黄色
+                elif pstate == "playing":
+                    dot_color = (96, 165, 250)      # 蓝色
+                elif pstate == "completed":
+                    dot_color = (74, 222, 128)      # 绿色
+                elif pstate == "error":
+                    dot_color = (252, 165, 165)     # 红色
+                else:
+                    dot_color = None
+                if dot_color:
+                    pygame.draw.circle(self.screen, dot_color, (rect.right - 10, rect.y + 14), 5)
+
+                txt = self.font_sm.render(sub_name, True, (255, 255, 255))
+                self.screen.blit(txt, (rect.x + 6, rect.y + 5))
+
+                # 状态文字
+                state_label = ""
+                if pstate == "sending":
+                    state_label = "发送中"
+                elif pstate == "playing":
+                    state_label = "播放中"
+                elif pstate == "completed":
+                    state_label = "完成"
+                elif pstate == "error":
+                    state_label = "失败"
+                if state_label:
+                    label_surf = self.font_mono.render(state_label, True, (255, 255, 255))
+                    # 用状态颜色画半透明背景标签，增强可读性
+                    label_w = label_surf.get_width() + 6
+                    label_h = label_surf.get_height() + 2
+                    label_x = rect.right - 10 - label_w
+                    label_y = rect.y + 4
+                    if dot_color:
+                        bg_label = pygame.Surface((label_w, label_h), pygame.SRCALPHA)
+                        bg_label.fill((*dot_color, 180))
+                        self.screen.blit(bg_label, (label_x, label_y))
+                    self.screen.blit(label_surf, (label_x + 3, label_y + 1))
+            else:
+                # ---- 非语音子任务：保持原样 ----
+                bg = (55, 65, 81)
+                pygame.draw.rect(self.screen, bg, rect, border_radius=4)
+                txt = self.font_sm.render(sub_name, True, (255, 255, 255))
+                self.screen.blit(txt, (rect.x + 6, rect.y + 5))
                 dot_color = (34, 197, 94) if on else (107, 114, 128)
                 pygame.draw.circle(self.screen, dot_color, (rect.right - 10, rect.y + 14), 5)
 
@@ -1165,6 +1274,8 @@ class RobotRemote:
                 scroll_hint = self.font_sm.render(
                     f"↑↓ 滚动  {self.voice_scroll_offset + 1}-{min(self.voice_scroll_offset + max_visible, total)}/{total}",
                     True, (156, 163, 175))
+                scroll_rect = pygame.Rect(px + 10 + main_w + 6, sub_y + max_visible * 32 + 2, sub_w, 20)
+                self.screen.blit(scroll_hint, (scroll_rect.x, scroll_rect.y))
             sub_y += 32
 
         # 底部：系统状态
@@ -1246,6 +1357,7 @@ class RobotRemote:
             "• 摇杆: 控制机器人移动",
             "• 数字键1-4: 切换主任务分类",
             "• C键: 相机播放/暂停",
+            "• 点击语音段落: 发送→播放→完成 颜色变化",
         ]
         for i, h in enumerate(helps):
             self.screen.blit(self.font_sm.render(h, True, (209, 213, 219)), (px + 12, help_y + 24 + i * 20))
@@ -1380,6 +1492,16 @@ class RobotRemote:
                             print(f"❌ 透传发送失败: {e}")
                         self.last_joystick_send_time = current_time
             # ===============================================================
+
+            # 语音段落状态自动过期（completed/error 3秒后恢复idle）
+            for p_num in list(self.voice_para_states.keys()):
+                st = self.voice_para_states[p_num]
+                if st in ("completed", "error"):
+                    elapsed = current_time - self.voice_para_state_time.get(p_num, 0)
+                    if elapsed > 3.0:
+                        self.voice_para_states[p_num] = "idle"
+                        if self.current_voice_para == p_num:
+                            self.current_voice_para = None
 
             self.draw_ui()
             clock.tick(60)

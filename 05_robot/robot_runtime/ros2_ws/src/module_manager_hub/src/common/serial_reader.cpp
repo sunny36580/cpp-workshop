@@ -1,9 +1,7 @@
-#include "module_manager_hub/serial_reader.h"
+#include "module_manager_hub/common/serial_reader.h"
 #include <cstdio>
 
-// =====================================================================
 // 构造 & 析构
-// =====================================================================
 SerialReader::SerialReader()
     : serial_port_(io_context_)
 {
@@ -14,9 +12,7 @@ SerialReader::~SerialReader()
     close();
 }
 
-// =====================================================================
 // 打开 / 关闭
-// =====================================================================
 bool SerialReader::open(const std::string& port, int baud_rate)
 {
     try {
@@ -58,9 +54,7 @@ bool SerialReader::is_open() const
     return serial_port_.is_open();
 }
 
-// =====================================================================
 // 异步读取
-// =====================================================================
 void SerialReader::doRead()
 {
     serial_port_.async_read_some(boost::asio::buffer(rx_buf_),
@@ -79,9 +73,7 @@ void SerialReader::doRead()
         });
 }
 
-// =====================================================================
 // 写
-// =====================================================================
 void SerialReader::write(const uint8_t* data, size_t len)
 {
     boost::system::error_code ec;

@@ -1,12 +1,10 @@
 #pragma once
 
-#include <rclcpp/rclcpp.hpp>
-#include <std_msgs/msg/string.hpp>
+#include <cstdint>
+#include <functional>
 #include <map>
 #include <string>
 #include <vector>
-#include <cstdint>
-#include <yaml-cpp/yaml.h>
 
 // =====================================================================
 // 二进制 UDP 上报协议（终版）
@@ -48,58 +46,67 @@ struct UdpEntry {
 };
 #pragma pack(pop)
 
-/// 心跳汇聚节点（整机状态汇总核心）
+/// 回调类型：日志输出（由 Node 层注入）
+using HbLogCallback = std::function<void(int level, const std::string& msg)>;
+
+/// 心跳汇聚核心 —— 纯业务逻辑，不依赖 ROS
 /// 逻辑 A：原子写入心跳文件 → Runtime 本地监控
 /// 逻辑 B：二进制 UDP 上报远端中控
-/// 自身心跳：/robot/collector/heartbeat
-class HeartbeatCollector : public rclcpp::Node {
+class HeartbeatCollectorCore {
 public:
-  explicit HeartbeatCollector(const std::string &name,
-                              const rclcpp::NodeOptions &opts = rclcpp::NodeOptions());
-  ~HeartbeatCollector() override;
-
-private:
   struct HeartbeatTarget {
     std::string name;
-    std::string topic;
+    std::string topic;       // 仅标识用，实际订阅在 Node 层
     std::string msg_type;
-    uint16_t svc_id = 0;         // 二进制协议中的服务 ID
+    uint16_t svc_id = 0;
     double last_time = 0.0;
     uint8_t state = SVC_OFFLINE;
   };
 
-  void loadConfig(const YAML::Node &root);
+  HeartbeatCollectorCore();
+  ~HeartbeatCollectorCore();
 
-  // 逻辑 A：原子写心跳文件
-  void writeHeartbeatFile(const std::string &name, double timestamp);
+  /// 设置日志回调
+  void setLogCallback(HbLogCallback cb) { log_cb_ = std::move(cb); }
 
-  // 逻辑 B：UDP 上报
+  /// 加载配置
+  void loadConfig(const std::string& heartbeat_dir, double timeout_sec,
+                  const std::string& udp_host, int udp_port,
+                  const std::vector<HeartbeatTarget>& targets);
+
+  /// 逻辑 A：原子写入心跳文件
+  void writeHeartbeatFile(const std::string& name, double timestamp);
+
+  /// 初始化 UDP socket
   void initUdpSocket();
+
+  /// 逻辑 B：UDP 上报
   void sendUdpReport();
 
-  // 心跳接收 & 自身心跳
-  void onHeartbeat(const std::string &name);
-  void publishSelfHeartbeat();
-  void checkTimer();
+  /// 心跳接收（更新目标状态）
+  void onHeartbeat(const std::string& name, double now);
 
-  // 心跳追踪
+  /// 超时检测
+  void checkTimeout(double now);
+
+  /// 获取所有心跳目标（Node 层读取用）
+  const std::vector<HeartbeatTarget>& targets() const { return targets_; }
+  std::vector<HeartbeatTarget>& targets() { return targets_; }
+
+  /// CRC32 计算
+  static uint32_t calcCRC32(const uint8_t* data, size_t len);
+
+private:
   std::vector<HeartbeatTarget> targets_;
-  std::map<std::string, rclcpp::SubscriptionBase::SharedPtr> subs_;
-  rclcpp::TimerBase::SharedPtr self_hb_timer_;
-  rclcpp::TimerBase::SharedPtr check_timer_;
-  rclcpp::TimerBase::SharedPtr udp_timer_;
-  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr self_hb_pub_;
-
-  // 配置
-  std::string heartbeat_dir_;   // 心跳文件目录（Runtime 读取用）
+  std::string heartbeat_dir_;
   double timeout_sec_ = 8.0;
 
   // UDP 上报
   std::string udp_host_;
   int udp_port_ = 0;
   int udp_sock_ = -1;
-  uint8_t seq_ = 0;              // 包序列号
+  uint8_t seq_ = 0;
 
-  // CRC32
-  static uint32_t calcCRC32(const uint8_t *data, size_t len);
+  // 日志回调
+  HbLogCallback log_cb_;
 };

@@ -20,7 +20,13 @@ find_package(yaml-cpp REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 find_package(Boost REQUIRED COMPONENTS system)
 
-# 生成消息（模块管理器不再管理进程生命周期，移除 ModuleStatus / ModuleControl）
+# OpenCV / FFmpeg 依赖（CameraStreamerCore 使用）
+find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs highgui)
+find_package(cv_bridge REQUIRED)
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(FFMPEG REQUIRED libavcodec libavutil libswscale)
+
+# 生成消息
 rosidl_generate_interfaces(${PROJECT_NAME}
   msg/Robotarmcontrol.msg
   msg/Robotarmstatus.msg
@@ -29,21 +35,35 @@ rosidl_generate_interfaces(${PROJECT_NAME}
 
 include_directories(include)
 
-# 编译可执行文件（SerialJoyBridge + CameraStreamer + HeartbeatCollector）
-# ModuleManager 暂不编译（串口遥控协议阶段二启用，源文件保留）
-add_executable(module_manager_node
-  src/main.cpp
-  src/serial_joy_bridge.cpp
-  src/serial_reader.cpp
-  src/usb_camera_sender_node.cpp
-  src/heartbeat_collector.cpp
+# =====================================================================
+# 编译静态库：纯业务逻辑（无 ROS 依赖）
+# =====================================================================
+add_library(module_manager_core STATIC
+  src/common/serial_reader.cpp
+  src/core/joy_bridge_core.cpp
+  src/core/camera_streamer_core.cpp
+  src/core/heartbeat_collector_core.cpp
+  src/core/module_manager_core.cpp
 )
 
-# OpenCV / FFmpeg 依赖（CameraStreamer 使用）
-find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs highgui)
-find_package(cv_bridge REQUIRED)
-find_package(PkgConfig REQUIRED)
-pkg_check_modules(FFMPEG REQUIRED libavcodec libavutil libswscale)
+target_include_directories(module_manager_core PRIVATE ${FFMPEG_INCLUDE_DIRS})
+target_link_libraries(module_manager_core
+  yaml-cpp
+  ${Boost_LIBRARIES}
+  ${OpenCV_LIBRARIES}
+  ${FFMPEG_LIBRARIES}
+)
+
+# =====================================================================
+# 编译可执行文件：ROS Node 层（链接 core 库）
+# =====================================================================
+add_executable(module_manager_node
+  src/main.cpp
+  src/ros/serial_joy_bridge_node.cpp
+  src/ros/camera_streamer_node.cpp
+  src/ros/heartbeat_collector_node.cpp
+  src/ros/module_manager_node.cpp
+)
 
 ament_target_dependencies(module_manager_node
   rclcpp
@@ -52,15 +72,15 @@ ament_target_dependencies(module_manager_node
   cv_bridge
 )
 
-target_include_directories(module_manager_node PRIVATE ${FFMPEG_INCLUDE_DIRS})
 target_link_libraries(module_manager_node
-  yaml-cpp
-  ${Boost_LIBRARIES}
-  ${OpenCV_LIBRARIES}
-  ${FFMPEG_LIBRARIES}
+  module_manager_core
 )
 
-# 安装到bin目录（三个 node 全部合并至 module_manager_node 同一进程）
+# 让 rosidl 生成的消息头文件可以被 module_manager_node 找到
+rosidl_get_typesupport_target(cpp_typesupport_target ${PROJECT_NAME} "rosidl_typesupport_cpp")
+target_link_libraries(module_manager_node "${cpp_typesupport_target}")
+
+# 安装
 install(TARGETS
   module_manager_node
   DESTINATION lib/${PROJECT_NAME}

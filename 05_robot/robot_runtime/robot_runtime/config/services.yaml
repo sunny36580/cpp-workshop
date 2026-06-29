@@ -1,0 +1,15 @@
+# ============================================================================
+# Robot Runtime — Service 注册配置
+# ============================================================================
+# 所有服务元信息统一在此管理，每个服务目录下不再维护独立的 service.yaml。
+# ============================================================================
+
+services:
+
+  module_manager_hub:
+    path: ./services/module_manager_hub
+    description: 运控代理服务，通过 ROS2 launch 管理运控模块节点
+    type: ros2
+    launch_cmd: ros2 launch module_manager_hub manager.launch.py
+    depends: []
+    auto_restart: false

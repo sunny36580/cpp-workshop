@@ -1,0 +1,14 @@
+# ============================================================================
+# Runtime 全局参数
+# ============================================================================
+runtime:
+  name: robot_runtime
+  version: 1.0.0
+
+  # 服务管理
+  services_config: services.yaml
+  modes_config: modes.yaml
+
+  # 监控
+  monitor_interval: 3.0
+  auto_restart: true

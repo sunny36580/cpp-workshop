@@ -1,0 +1,84 @@
+# =========================
+# 编译 / 安装 / 运行产物
+# =========================
+/build/
+/install/
+/log/
+/logs/
+
+# =========================
+# Python 相关
+# =========================
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+*.egg
+
+# =========================
+# C++ 编译生成
+# =========================
+*.o
+*.a
+*.so
+*.d
+*.exe
+
+# =========================
+# CMake 临时文件
+# =========================
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+compile_commands.json
+
+# =========================
+# IDE
+# =========================
+.idea/
+*.swp
+*.swo
+*.out
+*.app
+CMakeLists.txt.user
+CMakeCache.txt
+CMakeFiles
+cmake-build-debug/
+cmake-build-release/
+
+# =========================
+# 编辑器 / IDE
+# =========================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+.cache
+
+# =========================
+# Runtime 日志
+# =========================
+/logs/
+
+# =========================
+# 环境 / 临时文件
+# =========================
+.env
+venv/
+.env/
+*.tmp
+*.temp
+
+# =========================
+# ROS 日志 / 数据
+# =========================
+*.bag
+*.db
+*.rosinstall
+
+# service文件夹相关
+services/

@@ -1,0 +1,4835 @@
+=== ./LICENSE ===
+=== ./launch/manager.launch.py ===
+from launch import LaunchDescription
+from launch_ros.actions import Node
+import os
+from ament_index_python.packages import get_package_share_directory
+
+def generate_launch_description():
+    pkg = get_package_share_directory('module_manager_hub')
+    config_path = os.path.join(pkg, 'config', 'modules.yaml')
+
+    return LaunchDescription([
+        # 主进程（CameraStreamer + HeartbeatCollector，同一进程内）
+        # ModuleManager/SerialJoyBridge 阶段二启用
+        Node(
+            package='module_manager_hub',
+            executable='module_manager_node',
+            name='module_manager_hub',
+            parameters=[{'config_path': config_path}],
+            output='screen'
+        ),
+    ])=== ./package.xml ===
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>module_manager_hub</name>
+  <version>0.0.0</version>
+  <description>TODO: Package description</description>
+  <maintainer email="2570895973@qq.com">fang</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>boost</depend>
+  <depend>rclcpp</depend>
+  <depend>std_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>yaml-cpp</depend>
+  <depend>rosidl_default_generators</depend>
+  <depend>rosidl_default_runtime</depend>
+  <depend>libopencv-dev</depend>
+  <depend>sensor_msgs</depend>
+  <depend>cv_bridge</depend>
+  <depend>libavcodec-dev</depend>
+  <depend>libavutil-dev</depend>
+  <depend>libswscale-dev</depend>
+
+  <member_of_group>rosidl_interface_packages</member_of_group>
+
+  <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_lint_common</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
+=== ./CMakeLists.txt ===
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON CACHE INTERNAL "")
+
+cmake_minimum_required(VERSION 3.8)
+project(module_manager_hub)
+
+if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+  add_compile_options(-Wall -Wextra -Wpedantic)
+endif()
+
+if(POLICY CMP0148)
+  cmake_policy(SET CMP0148 OLD)
+endif()
+
+find_package(ament_cmake REQUIRED)
+find_package(rclcpp REQUIRED)
+find_package(std_msgs REQUIRED)
+find_package(geometry_msgs REQUIRED)
+find_package(sensor_msgs REQUIRED)
+find_package(yaml-cpp REQUIRED)
+find_package(rosidl_default_generators REQUIRED)
+find_package(Boost REQUIRED COMPONENTS system)
+
+# OpenCV / FFmpeg 依赖（CameraStreamerCore 使用）
+find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs highgui)
+find_package(cv_bridge REQUIRED)
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(FFMPEG REQUIRED libavcodec libavutil libswscale)
+
+# 生成消息
+rosidl_generate_interfaces(${PROJECT_NAME}
+  msg/Robotarmcontrol.msg
+  msg/Robotarmstatus.msg
+  DEPENDENCIES std_msgs
+)
+
+include_directories(include)
+
+# =====================================================================
+# 编译静态库：纯业务逻辑（无 ROS 依赖）
+# =====================================================================
+add_library(module_manager_core STATIC
+  src/common/serial_reader.cpp
+  src/core/joy_bridge_core.cpp
+  src/core/camera_streamer_core.cpp
+  src/core/heartbeat_collector_core.cpp
+  src/core/module_manager_core.cpp
+)
+
+target_include_directories(module_manager_core PRIVATE ${FFMPEG_INCLUDE_DIRS})
+target_link_libraries(module_manager_core
+  yaml-cpp
+  ${Boost_LIBRARIES}
+  ${OpenCV_LIBRARIES}
+  ${FFMPEG_LIBRARIES}
+)
+
+# =====================================================================
+# 编译可执行文件：ROS Node 层（链接 core 库）
+# =====================================================================
+add_executable(module_manager_node
+  src/main.cpp
+  src/ros/serial_joy_bridge_node.cpp
+  src/ros/camera_streamer_node.cpp
+  src/ros/heartbeat_collector_node.cpp
+  src/ros/module_manager_node.cpp
+)
+
+ament_target_dependencies(module_manager_node
+  rclcpp
+  std_msgs
+  sensor_msgs
+  cv_bridge
+)
+
+target_link_libraries(module_manager_node
+  module_manager_core
+)
+
+# 让 rosidl 生成的消息头文件可以被 module_manager_node 找到
+rosidl_get_typesupport_target(cpp_typesupport_target ${PROJECT_NAME} "rosidl_typesupport_cpp")
+target_link_libraries(module_manager_node "${cpp_typesupport_target}")
+
+# =====================================================================
+# 纯 C++ 单测可执行文件（无 ROS 依赖，仅链接 core 库）
+# =====================================================================
+add_executable(test_joy_bridge_core
+  test/test_joy_bridge_core.cpp
+)
+target_link_libraries(test_joy_bridge_core module_manager_core)
+
+add_executable(test_camera_streamer_core
+  test/test_camera_streamer_core.cpp
+)
+target_link_libraries(test_camera_streamer_core module_manager_core)
+
+add_executable(test_heartbeat_core
+  test/test_heartbeat_core.cpp
+)
+target_link_libraries(test_heartbeat_core module_manager_core)
+
+add_executable(test_module_manager_core
+  test/test_module_manager_core.cpp
+)
+target_link_libraries(test_module_manager_core module_manager_core)
+
+# 安装
+install(TARGETS
+  module_manager_node
+  DESTINATION lib/${PROJECT_NAME}
+)
+
+install(DIRECTORY launch config
+  DESTINATION share/${PROJECT_NAME}
+)
+
+# 启动/停止脚本（安装到 workspace 根目录 install/）
+install(CODE "file(INSTALL \"${CMAKE_CURRENT_SOURCE_DIR}/start.sh\" \"${CMAKE_CURRENT_SOURCE_DIR}/stop.sh\"
+       DESTINATION \"${CMAKE_INSTALL_PREFIX}/..\"
+       TYPE PROGRAM)")
+
+
+ament_package()=== ./src/ros/module_manager_node.cpp ===
+#include "module_manager_hub/ros/module_manager_node.h"
+#include <chrono>
+#include <cstring>
+#include <thread>
+#include <vector>
+#include <cstdio>
+#include <algorithm>
+
+using namespace std::chrono_literals;
+
+// =====================================================================
+// 构造函数 & 析构
+// =====================================================================
+ModuleManagerNode::ModuleManagerNode(const std::string &name,
+                                     const rclcpp::NodeOptions &opts)
+  : Node(name, opts), current_mode_("STAND"), hw_switch_state_(false)
+{
+  // 设置 Core 层日志回调
+  core_.setLogCallback(
+      [this](int level, const std::string& msg) {
+        switch (level) {
+          case 0: RCLCPP_INFO(this->get_logger(), "%s", msg.c_str()); break;
+          case 1: RCLCPP_WARN(this->get_logger(), "%s", msg.c_str()); break;
+          case 2: RCLCPP_ERROR(this->get_logger(), "%s", msg.c_str()); break;
+        }
+      });
+
+  // 加载配置
+  std::string config_path = "config/modules.yaml";
+  this->declare_parameter<std::string>("config_path", config_path);
+  this->get_parameter("config_path", config_path);
+  YAML::Node root_cfg = YAML::LoadFile(config_path);
+
+  loadSerialConfig(root_cfg);
+  loadTrackedModules(root_cfg["modules"]);
+  loadCmdRoute(root_cfg["cmd_route"]);
+
+  // 遥控话题
+  cmd_vel_pub_     = this->create_publisher<geometry_msgs::msg::Twist>("/cmd_vel", 10);
+  control_mode_pub_ = this->create_publisher<std_msgs::msg::String>("/control_mode", 10);
+  hw_switch_pub_   = this->create_publisher<std_msgs::msg::Bool>("/hwswitch", 10);
+  action_cmd_pub_  = this->create_publisher<std_msgs::msg::String>("/action_cmd", 10);
+
+  // 设置 SerialReader 裸数据回调 → 交给 ModuleManagerCore 解析
+  serial_reader_.setDataCallback(
+      std::bind(&ModuleManagerNode::onSerialData, this,
+                std::placeholders::_1, std::placeholders::_2));
+
+  // 500ms 定时推送串口状态
+  status_timer_ = this->create_wall_timer(500ms,
+      std::bind(&ModuleManagerNode::sendSerialStatus, this));
+
+  // 启动速度插值线程
+  core_.startSpeedLoop();
+
+  // 打开机器人遥控串口
+  if (root_cfg["serial"]) {
+    auto s = root_cfg["serial"];
+    std::string port = s["port"] ? s["port"].as<std::string>() : "/dev/ttyUSB0";
+    int baud = s["baud_rate"] ? s["baud_rate"].as<int>() : 115200;
+    serial_reader_.open(port, baud);
+  }
+
+  RCLCPP_INFO(this->get_logger(), "串口 ↔ ROS 桥接启动完成 ✅");
+}
+
+ModuleManagerNode::~ModuleManagerNode()
+{
+  core_.stopSpeedLoop();
+  serial_reader_.close();
+}
+
+// =====================================================================
+// 配置加载
+// =====================================================================
+void ModuleManagerNode::loadSerialConfig(const YAML::Node &root)
+{
+  if (root["serial"]) {
+    auto s = root["serial"];
+    std::string port = s["port"] ? s["port"].as<std::string>() : "/dev/ttyUSB0";
+    int baud = s["baud_rate"] ? s["baud_rate"].as<int>() : 115200;
+    RCLCPP_INFO(this->get_logger(), "机器人遥控串口: %s @ %d baud", port.c_str(), baud);
+  }
+}
+
+void ModuleManagerNode::loadTrackedModules(const YAML::Node &mods)
+{
+  if (!mods) return;
+
+  for (const auto &entry : mods) {
+    try {
+      auto &cfg = entry.second;
+      TrackedModule tm;
+      tm.name        = entry.first.as<std::string>();
+      tm.watch_topic = cfg["watch_topic"] ? cfg["watch_topic"].as<std::string>() : "";
+      tm.watch_type  = cfg["watch_type"] ? cfg["watch_type"].as<std::string>() : "";
+      tm.last_msg_time = this->now().seconds();
+      core_.trackedModules()[tm.name] = tm;
+
+      // 为有 watch_topic 的模块建立话题订阅（用于心跳状态追踪）
+      if (!tm.watch_topic.empty()) {
+        try {
+          auto cb = [this, n = tm.name](const std::shared_ptr<rclcpp::SerializedMessage>) {
+            core_.updateModuleHeartbeat(n, this->now().seconds());
+          };
+          std::string type_str = tm.watch_type.empty() ? "std_msgs/msg/String" : tm.watch_type;
+          watch_subs_[tm.name] = this->create_generic_subscription(tm.watch_topic, type_str, 10, cb);
+          RCLCPP_INFO(this->get_logger(), "追踪模块 %s → %s [%s]", tm.name.c_str(), tm.watch_topic.c_str(), type_str.c_str());
+        } catch (std::exception &e) {
+          RCLCPP_WARN(this->get_logger(), "订阅失败 %s: %s", tm.watch_topic.c_str(), e.what());
+        }
+      }
+    } catch (std::exception &e) {
+      RCLCPP_WARN(this->get_logger(), "跳过无效追踪模块: %s", e.what());
+    }
+  }
+}
+
+// =====================================================================
+// 指令路由
+// =====================================================================
+void ModuleManagerNode::loadCmdRoute(const YAML::Node &route_node)
+{
+  for (const auto &entry : route_node) {
+    CmdRoute r;
+    r.topic    = entry.second["topic"].as<std::string>();
+    r.msg_type = entry.second["msg_type"].as<std::string>();
+    cmd_routes_[entry.first.as<std::string>()] = r;
+    if (r.msg_type == "Robotarmcontrol")
+      arm_control_pubs_[r.topic] = this->create_publisher<module_manager_hub::msg::Robotarmcontrol>(r.topic, 10);
+    RCLCPP_INFO(this->get_logger(), "指令路由: %s → %s [%s]", entry.first.as<std::string>().c_str(), r.topic.c_str(), r.msg_type.c_str());
+  }
+}
+
+// =====================================================================
+// SerialReader 裸数据回调 → Core 解析 → 节点层处理
+// =====================================================================
+void ModuleManagerNode::onSerialData(const uint8_t *data, size_t len)
+{
+  auto packets = core_.feedSerialData(data, len);
+  for (const auto& [cmd_type, payload] : packets) {
+    onParsedPacket(cmd_type, payload);
+  }
+}
+
+void ModuleManagerNode::onParsedPacket(uint8_t cmd_type, const std::vector<uint8_t>& payload)
+{
+  auto publish_mode = [this]() {
+    std_msgs::msg::String m; m.data = current_mode_; control_mode_pub_->publish(m);
+  };
+
+  switch (cmd_type)
+  {
+    // ---- CMD_MOVE: 运动指令 ----
+    case CMD_MOVE: {
+      if (payload.size() < 8) { RCLCPP_WARN(this->get_logger(), "运动指令长度不足"); break; }
+      float linear = 0, angular = 0;
+      memcpy(&linear,  payload.data(),      sizeof(float));
+      memcpy(&angular, payload.data() + 4,  sizeof(float));
+
+      core_.setTargetSpeed(linear, angular);
+
+      if ((std::abs(linear) > 0.001f || std::abs(angular) > 0.001f) && current_mode_ == "STAND") {
+        current_mode_ = "WALK_FULL";
+        publish_mode();
+      }
+
+      float clamped_linear = std::clamp(linear, -0.6f, 0.6f);
+      float clamped_angular = std::clamp(angular, -1.0f, 1.0f);
+      RCLCPP_INFO(this->get_logger(), "运动指令: linear=%.3f, angular=%.3f",
+                  clamped_linear, clamped_angular);
+      break;
+    }
+
+    // ---- CMD_TASK: 任务指令 ----
+    case CMD_TASK: {
+      double now = this->now().seconds();
+      if (now - last_task_cmd_time_ < TASK_CMD_DEBOUNCE_SEC) {
+        RCLCPP_WARN(this->get_logger(), "防误触: 忽略连续任务指令 (距上次 %.2fs < %.1fs)",
+                    now - last_task_cmd_time_, TASK_CMD_DEBOUNCE_SEC);
+        break;
+      }
+      last_task_cmd_time_ = now;
+
+      if (payload.size() < 1) { RCLCPP_WARN(this->get_logger(), "任务指令长度不足"); break; }
+      uint8_t task_id = payload[0];
+
+      static const char* actions[] = {"WAVE","HANDSHAKE","PERFORM","TURN_180","FINGER_SHOW","WAVE","SMILE","STAND"};
+      if (task_id >= 1 && task_id <= 8) {
+        std_msgs::msg::String a;
+        a.data = actions[task_id - 1];
+        action_cmd_pub_->publish(a);
+        RCLCPP_INFO(this->get_logger(), "转发 action_cmd: %s", a.data.c_str());
+      }
+      break;
+    }
+
+    // ---- CMD_HEARTBEAT: 急停 ----
+    case CMD_HEARTBEAT: {
+      RCLCPP_WARN(this->get_logger(), ">>> 急停 <<<");
+      core_.setTargetSpeed(0.0f, 0.0f);
+      cmd_vel_pub_->publish(geometry_msgs::msg::Twist());
+      current_mode_ = "EMERGENCY"; publish_mode();
+      hw_switch_state_ = false;
+      std_msgs::msg::Bool hw; hw.data = false; hw_switch_pub_->publish(hw);
+      break;
+    }
+
+    default:
+      RCLCPP_WARN(this->get_logger(), "未知指令类型: %d", cmd_type);
+  }
+}
+
+void ModuleManagerNode::dispatchCommand(const std::string &cmd, const std::vector<double> &params)
+{
+  auto it = cmd_routes_.find(cmd);
+  if (it == cmd_routes_.end()) { RCLCPP_WARN(this->get_logger(), "未知指令: %s", cmd.c_str()); return; }
+
+  if (it->second.msg_type == "Robotarmcontrol") {
+    auto pit = arm_control_pubs_.find(it->second.topic);
+    if (pit == arm_control_pubs_.end()) return;
+    module_manager_hub::msg::Robotarmcontrol msg;
+    for (size_t i = 0; i + 2 < params.size(); i += 3) {
+      msg.motor_ids.push_back(static_cast<uint32_t>(params[i]));
+      msg.target_positions.push_back(static_cast<float>(params[i+1]));
+      msg.target_velocitie.push_back(static_cast<float>(params[i+2]));
+    }
+    pit->second->publish(msg);
+    RCLCPP_INFO(this->get_logger(), "转发机械臂指令 ✅ 电机数=%zu", msg.motor_ids.size());
+  }
+}
+
+// =====================================================================
+// 串口状态反馈（500ms 定时向遥控端回发模块状态位图）
+// =====================================================================
+void ModuleManagerNode::sendSerialStatus()
+{
+  static const char* mod_ids[] = {
+    "lower_body", "upper_body", "imu_driver",
+    "remote_interface", "usb_camera", nullptr
+  };
+  uint16_t mask = 0;
+  for (int i = 0; mod_ids[i] != nullptr; i++) {
+    auto it = core_.trackedModules().find(mod_ids[i]);
+    if (it != core_.trackedModules().end() && it->second.online)
+      mask |= (1 << i);
+  }
+
+  uint8_t payload[PROTO_DATA_LEN] = {0};
+  payload[0] = static_cast<uint8_t>((mask >> 8) & 0xFF);
+  payload[1] = static_cast<uint8_t>(mask & 0xFF);
+
+  std::vector<uint8_t> frame;
+  core_.buildSerialFrame(CMD_STATUS, payload, PROTO_DATA_LEN, frame);
+  serial_reader_.write(frame.data(), frame.size());
+}
+=== ./src/ros/camera_streamer_node.cpp ===
+#include "module_manager_hub/ros/camera_streamer_node.h"
+#include <cv_bridge/cv_bridge.h>
+#include <opencv2/opencv.hpp>
+#include <sensor_msgs/msg/image.hpp>
+
+using namespace std::chrono_literals;
+
+CameraStreamerNode::CameraStreamerNode(const std::string& node_name,
+                                       const rclcpp::NodeOptions &opts)
+    : Node(node_name, opts)
+{
+  this->declare_parameter<std::string>("image_topic", "/camera1/image_raw");
+  this->declare_parameter<int>("port", 8888);
+  this->declare_parameter<int>("bitrate", 3000);
+
+  image_topic_ = this->get_parameter("image_topic").as_string();
+  int port      = this->get_parameter("port").as_int();
+  int bitrate   = this->get_parameter("bitrate").as_int();
+
+  // 设置 Core 层日志回调
+  core_.setLogCallback(
+      [this](int level, const std::string& msg) {
+        switch (level) {
+          case 0: RCLCPP_INFO(this->get_logger(), "%s", msg.c_str()); break;
+          case 1: RCLCPP_WARN(this->get_logger(), "%s", msg.c_str()); break;
+          case 2: RCLCPP_ERROR(this->get_logger(), "%s", msg.c_str()); break;
+        }
+      });
+
+  image_sub_ = this->create_subscription<sensor_msgs::msg::Image>(
+      image_topic_, rclcpp::SensorDataQoS(),
+      std::bind(&CameraStreamerNode::imageCallback, this, std::placeholders::_1));
+
+  // 初始化编码器和 TCP server
+  core_.initEncoder(640, 480, bitrate);
+  core_.initTcpServer(port);
+
+  // 启动推流线程
+  auto ok_check = [this]() { return rclcpp::ok(); };
+  stream_thread_ = std::thread(&CameraStreamerCore::streamLoop, &core_,
+                                std::ref(running_), ok_check);
+
+  RCLCPP_INFO(this->get_logger(), "✅ 推流节点启动  topic=%s  port=%d  H.264",
+              image_topic_.c_str(), port);
+}
+
+CameraStreamerNode::~CameraStreamerNode()
+{
+  running_ = false;
+  if (stream_thread_.joinable()) stream_thread_.join();
+}
+
+void CameraStreamerNode::imageCallback(const sensor_msgs::msg::Image::SharedPtr msg)
+{
+  try {
+    auto cv_ptr = cv_bridge::toCvCopy(msg, "bgr8");
+    core_.setFrame(cv_ptr->image);
+  } catch (cv_bridge::Exception &e) {
+    RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
+                         "cv_bridge failed: %s", e.what());
+  }
+}
+=== ./src/ros/serial_joy_bridge_node.cpp ===
+#include "module_manager_hub/ros/serial_joy_bridge_node.h"
+#include <rclcpp/rclcpp.hpp>
+#include <yaml-cpp/yaml.h>
+
+using namespace std::chrono_literals;
+
+SerialJoyBridgeNode::SerialJoyBridgeNode(const std::string &name,
+                                         const rclcpp::NodeOptions &opts)
+  : Node(name, opts)
+{
+  // 尝试从 YAML 配置文件加载串口参数
+  this->declare_parameter<std::string>("config_path", "");
+  std::string config_path = this->get_parameter("config_path").as_string();
+
+  bool config_loaded = false;
+  if (!config_path.empty()) {
+    try {
+      YAML::Node root = YAML::LoadFile(config_path);
+      if (root["serial"]) {
+        auto s = root["serial"];
+        if (s["port"])      serial_port_ = s["port"].as<std::string>();
+        if (s["baud_rate"]) serial_baud_ = s["baud_rate"].as<int>();
+        config_loaded = true;
+        RCLCPP_INFO(this->get_logger(), "从配置文件加载串口: %s @ %d baud",
+                    serial_port_.c_str(), serial_baud_);
+      }
+    } catch (const std::exception &e) {
+      RCLCPP_WARN(this->get_logger(), "加载配置文件失败: %s", e.what());
+    }
+  }
+
+  // 如果 YAML 未加载成功，回退到 ROS2 参数
+  if (!config_loaded) {
+    this->declare_parameter<std::string>("serial_port", "/dev/ttyUSB0");
+    this->declare_parameter<int>("serial_baud", 115200);
+    serial_port_ = this->get_parameter("serial_port").as_string();
+    serial_baud_ = this->get_parameter("serial_baud").as_int();
+  }
+
+  joy_pub_ = this->create_publisher<sensor_msgs::msg::Joy>("/joy", 10);
+
+  // 设置 SerialReader 回调 → 交给 JoyBridgeCore 解析
+  serial_reader_.setDataCallback(
+      std::bind(&SerialJoyBridgeNode::onSerialData, this,
+                std::placeholders::_1, std::placeholders::_2));
+
+  // 打开串口
+  if (!serial_reader_.open(serial_port_, serial_baud_)) {
+    RCLCPP_ERROR(this->get_logger(), "串口打开失败: %s", serial_port_.c_str());
+  }
+}
+
+SerialJoyBridgeNode::~SerialJoyBridgeNode()
+{
+  serial_reader_.close();
+}
+
+void SerialJoyBridgeNode::onSerialData(const uint8_t *data, size_t len)
+{
+  auto frames = joy_core_.feedData(data, len);
+
+  for (const auto& frame : frames) {
+    sensor_msgs::msg::Joy joy_msg;
+    joy_msg.header.stamp = this->now();
+    joy_msg.axes = frame.axes;
+    joy_msg.buttons = frame.buttons;
+    joy_pub_->publish(joy_msg);
+  }
+
+  if (joy_core_.frameCount() % 300 == 0 && !frames.empty()) {
+    RCLCPP_INFO(this->get_logger(), "[JoyBridge] 已接收 %zu 帧, 缓存=%zu",
+                joy_core_.frameCount(), 0UL);
+  }
+}
+=== ./src/ros/heartbeat_collector_node.cpp ===
+#include "module_manager_hub/ros/heartbeat_collector_node.h"
+#include <chrono>
+#include <filesystem>
+#include <yaml-cpp/yaml.h>
+
+namespace fs = std::filesystem;
+using namespace std::chrono_literals;
+
+// 构造 & 析构
+HeartbeatCollectorNode::HeartbeatCollectorNode(const std::string &name,
+                                               const rclcpp::NodeOptions &opts)
+  : Node(name, opts)
+{
+  // 设置 Core 层日志回调
+  core_.setLogCallback(
+      [this](int level, const std::string& msg) {
+        switch (level) {
+          case 0: RCLCPP_INFO(this->get_logger(), "%s", msg.c_str()); break;
+          case 1: RCLCPP_WARN(this->get_logger(), "%s", msg.c_str()); break;
+          case 2: RCLCPP_ERROR(this->get_logger(), "%s", msg.c_str()); break;
+        }
+      });
+
+  // 加载配置
+  this->declare_parameter<std::string>("config_path", "");
+  std::string cfg_path = this->get_parameter("config_path").as_string();
+  if (!cfg_path.empty() && fs::exists(cfg_path)) {
+    try {
+      YAML::Node root = YAML::LoadFile(cfg_path);
+      loadConfig(root);
+    } catch (std::exception &e) {
+      RCLCPP_WARN(this->get_logger(), "加载配置文件失败: %s", e.what());
+    }
+  }
+
+  // 没加载到配置时用测试默认值
+  if (core_.targets().empty()) {
+    HeartbeatCollectorCore::HeartbeatTarget t;
+    t.name = "test_service";
+    t.topic = "/robot/test/heartbeat";
+    t.msg_type = "std_msgs/msg/String";
+    core_.targets().push_back(t);
+  }
+
+  // 为每个外部 target 建立话题订阅
+  for (auto &t : core_.targets()) {
+    if (t.topic.empty()) continue;
+    try {
+      auto cb = [this, n = t.name](const std::shared_ptr<rclcpp::SerializedMessage>) {
+        onHeartbeat(n);
+      };
+      std::string type = t.msg_type.empty() ? "std_msgs/msg/String" : t.msg_type;
+      subs_[t.name] = this->create_generic_subscription(t.topic, type, 10, cb);
+      RCLCPP_INFO(this->get_logger(), "心跳监听: %s ← %s [%s]",
+                  t.name.c_str(), t.topic.c_str(), type.c_str());
+    } catch (std::exception &e) {
+      RCLCPP_WARN(this->get_logger(), "订阅失败 %s: %s", t.topic.c_str(), e.what());
+    }
+  }
+
+  // UDP 初始化
+  core_.initUdpSocket();
+
+  // 定时 2s 检查超时
+  check_timer_ = this->create_wall_timer(2s,
+      std::bind(&HeartbeatCollectorNode::checkTimer, this));
+
+  // 定时 2s UDP 上报
+  udp_timer_ = this->create_wall_timer(2s,
+      std::bind(&HeartbeatCollectorNode::sendUdpReport, this));
+
+  RCLCPP_INFO(this->get_logger(), "心跳汇聚节点启动 ✅");
+}
+
+HeartbeatCollectorNode::~HeartbeatCollectorNode()
+{
+}
+
+// 配置加载
+void HeartbeatCollectorNode::loadConfig(const YAML::Node &root)
+{
+  auto hb = root["heartbeat"];
+  if (!hb) return;
+
+  std::string heartbeat_dir;
+  double timeout_sec = 8.0;
+  std::string udp_host;
+  int udp_port = 0;
+  std::vector<HeartbeatCollectorCore::HeartbeatTarget> targets;
+
+  if (hb["heartbeat_dir"]) heartbeat_dir = hb["heartbeat_dir"].as<std::string>();
+  if (hb["timeout_sec"])   timeout_sec   = hb["timeout_sec"].as<double>();
+  if (hb["udp_host"])      udp_host      = hb["udp_host"].as<std::string>();
+  if (hb["udp_port"])      udp_port      = hb["udp_port"].as<int>();
+
+  if (hb["targets"]) {
+    for (const auto &entry : hb["targets"]) {
+      HeartbeatCollectorCore::HeartbeatTarget t;
+      t.name      = entry["name"].as<std::string>();
+      t.topic     = entry["topic"].as<std::string>();
+      t.msg_type  = entry["msg_type"] ? entry["msg_type"].as<std::string>() : "std_msgs/msg/String";
+      t.svc_id    = entry["svc_id"] ? entry["svc_id"].as<uint16_t>() : 0;
+      targets.push_back(t);
+    }
+  }
+
+  core_.loadConfig(heartbeat_dir, timeout_sec, udp_host, udp_port, targets);
+}
+
+// 超时检测
+void HeartbeatCollectorNode::checkTimer()
+{
+  core_.checkTimeout(this->now().seconds());
+}
+
+// UDP 上报
+void HeartbeatCollectorNode::sendUdpReport()
+{
+  core_.sendUdpReport();
+}
+=== ./src/main.cpp ===
+#include "module_manager_hub/ros/serial_joy_bridge_node.h"
+#include "module_manager_hub/ros/camera_streamer_node.h"
+#include "module_manager_hub/ros/heartbeat_collector_node.h"
+#include <rclcpp/rclcpp.hpp>
+#include <signal.h>
+
+/// 同一进程内运行多个 node，由 MultiThreadedExecutor 分配不同线程：
+///   - SerialJoyBridgeNode  （摇杆串口，变长帧 → /joy）
+///   - CameraStreamerNode   （USB 相机 H.264 推流 → TCP 8888）
+///   - HeartbeatCollectorNode（心跳汇聚 → 文件/UDP 上报）
+///
+/// ModuleManagerNode 暂不启动（串口遥控协议阶段二启用）
+int main(int argc, char *argv[]) {
+  rclcpp::init(argc, argv);
+
+  // 忽略 SIGPIPE，防止 send() 写入已关闭 socket 时进程被杀死
+  signal(SIGPIPE, SIG_IGN);
+
+  auto joy = std::make_shared<SerialJoyBridgeNode>("serial_joy_bridge");
+  auto cam = std::make_shared<CameraStreamerNode>("camera_streamer_node");
+  auto hbc = std::make_shared<HeartbeatCollectorNode>("heartbeat_collector");
+
+  rclcpp::executors::MultiThreadedExecutor exec;
+  exec.add_node(joy);
+  exec.add_node(cam);
+  exec.add_node(hbc);
+  exec.spin();
+
+  rclcpp::shutdown();
+  return 0;
+}=== ./src/core/heartbeat_collector_core.cpp ===
+#include "module_manager_hub/core/heartbeat_collector_core.h"
+#include <cstdio>
+#include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <sstream>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <unistd.h>
+
+namespace fs = std::filesystem;
+
+// =====================================================================
+// CRC32 查找表 + 计算
+// =====================================================================
+static uint32_t crc32_table[256];
+static bool crc32_init = false;
+
+static void buildCRC32Table() {
+  for (uint32_t i = 0; i < 256; i++) {
+    uint32_t c = i;
+    for (int j = 0; j < 8; j++) {
+      if (c & 1) c = (c >> 1) ^ 0xEDB88320;
+      else       c >>= 1;
+    }
+    crc32_table[i] = c;
+  }
+  crc32_init = true;
+}
+
+uint32_t HeartbeatCollectorCore::calcCRC32(const uint8_t *data, size_t len) {
+  if (!crc32_init) buildCRC32Table();
+  uint32_t c = 0xFFFFFFFF;
+  for (size_t i = 0; i < len; i++) {
+    c = crc32_table[(c ^ data[i]) & 0xFF] ^ (c >> 8);
+  }
+  return c ^ 0xFFFFFFFF;
+}
+
+// =====================================================================
+// 构造 & 析构
+// =====================================================================
+HeartbeatCollectorCore::HeartbeatCollectorCore()
+{
+}
+
+HeartbeatCollectorCore::~HeartbeatCollectorCore()
+{
+  if (udp_sock_ >= 0) close(udp_sock_);
+}
+
+// =====================================================================
+// 配置加载
+// =====================================================================
+void HeartbeatCollectorCore::loadConfig(const std::string& heartbeat_dir,
+                                         double timeout_sec,
+                                         const std::string& udp_host,
+                                         int udp_port,
+                                         const std::vector<HeartbeatTarget>& targets)
+{
+  heartbeat_dir_ = heartbeat_dir;
+  timeout_sec_ = timeout_sec;
+  udp_host_ = udp_host;
+  udp_port_ = udp_port;
+  targets_ = targets;
+}
+
+// =====================================================================
+// 逻辑 A：原子写入心跳文件
+// 使用临时文件 + mv 原子替换，避免 Runtime 读取半截文件
+// =====================================================================
+void HeartbeatCollectorCore::writeHeartbeatFile(const std::string &name, double timestamp)
+{
+  if (heartbeat_dir_.empty()) return;
+  try {
+    fs::create_directories(heartbeat_dir_);
+  } catch (...) { return; }
+
+  std::string tmp_path = heartbeat_dir_ + "/." + name + ".tmp";
+  std::string dst_path = heartbeat_dir_ + "/" + name;
+
+  // 写临时文件（用 std::setprecision 保留足够精度）
+  {
+    std::ofstream f(tmp_path);
+    if (!f) return;
+    f.precision(15);
+    f << timestamp << std::endl;
+  }
+
+  // POSIX rename() 原子替换
+  if (::rename(tmp_path.c_str(), dst_path.c_str()) != 0) {
+    if (log_cb_) log_cb_(1, std::string("心跳文件写入失败 ") + dst_path + ": " + std::strerror(errno));
+    fs::remove(tmp_path);
+  }
+}
+
+// =====================================================================
+// 逻辑 B：UDP 上报整机状态至中控
+// =====================================================================
+void HeartbeatCollectorCore::initUdpSocket()
+{
+  if (udp_host_.empty() || udp_port_ <= 0) return;
+  udp_sock_ = socket(AF_INET, SOCK_DGRAM, 0);
+  if (udp_sock_ < 0) {
+    if (log_cb_) log_cb_(1, "UDP socket 创建失败");
+  }
+}
+
+void HeartbeatCollectorCore::sendUdpReport()
+{
+  if (udp_sock_ < 0) return;
+
+  uint8_t count = static_cast<uint8_t>(targets_.size());
+
+  // 组包：Header + Entry[]
+  std::vector<uint8_t> pkt(UDP_HEADER_LEN + count * UDP_ENTRY_LEN);
+
+  // 填 header（CRC 先填 0）
+  UdpHeader *hdr = reinterpret_cast<UdpHeader*>(pkt.data());
+  hdr->magic    = htons(UDP_MAGIC);
+  hdr->version  = UDP_VERSION;
+  hdr->count    = count;
+  hdr->seq      = seq_++;
+  hdr->reserved = 0;
+  hdr->crc32    = 0;
+
+  // 填条目
+  UdpEntry *entries = reinterpret_cast<UdpEntry*>(pkt.data() + UDP_HEADER_LEN);
+  for (int i = 0; i < count; i++) {
+    entries[i].svc_id   = htons(targets_[i].svc_id);
+    entries[i].state    = targets_[i].state;
+    entries[i].reserved = 0;
+    entries[i].last_hb  = targets_[i].last_time;
+  }
+
+  // 计算 CRC32（覆盖整个包）
+  hdr->crc32 = htonl(calcCRC32(pkt.data(), pkt.size()));
+
+  struct sockaddr_in addr{};
+  addr.sin_family = AF_INET;
+  addr.sin_port   = htons(udp_port_);
+  inet_pton(AF_INET, udp_host_.c_str(), &addr.sin_addr);
+
+  sendto(udp_sock_, pkt.data(), pkt.size(), 0,
+         (struct sockaddr*)&addr, sizeof(addr));
+}
+
+// =====================================================================
+// 心跳接收
+// =====================================================================
+void HeartbeatCollectorCore::onHeartbeat(const std::string &name, double now)
+{
+  for (auto &t : targets_) {
+    if (t.name == name) {
+      t.last_time = now;
+      t.state = SVC_ONLINE;
+      writeHeartbeatFile(name, now);
+      break;
+    }
+  }
+}
+
+// =====================================================================
+// 超时检测
+// =====================================================================
+void HeartbeatCollectorCore::checkTimeout(double now)
+{
+  for (auto &t : targets_) {
+    if (t.state == SVC_OFFLINE) continue;
+
+    bool timed_out = (now - t.last_time) > timeout_sec_;
+    if (timed_out) {
+      if (log_cb_) {
+        char buf[256];
+        snprintf(buf, sizeof(buf), "心跳超时: %s (%.1fs 无更新)", t.name.c_str(), now - t.last_time);
+        log_cb_(1, buf);
+      }
+      t.state = SVC_OFFLINE;
+
+      // 清除心跳文件
+      if (!heartbeat_dir_.empty()) {
+        fs::remove(heartbeat_dir_ + "/" + t.name);
+        fs::remove(heartbeat_dir_ + "/." + t.name + ".tmp");
+      }
+    }
+  }
+}
+=== ./src/core/module_manager_core.cpp ===
+#include "module_manager_hub/core/module_manager_core.h"
+#include <algorithm>
+#include <chrono>
+#include <cstring>
+#include <cstdio>
+#include <thread>
+
+using namespace std::chrono_literals;
+
+// CRC16-Modbus
+uint16_t ModuleManagerCore::calcCRC16(const uint8_t *data, size_t len)
+{
+  uint16_t crc = 0xFFFF;
+  for (size_t i = 0; i < len; i++) {
+    crc ^= data[i];
+    for (int j = 0; j < 8; j++) {
+      if (crc & 0x0001) crc = (crc >> 1) ^ 0xA001;
+      else              crc >>= 1;
+    }
+  }
+  return crc;
+}
+
+// 构造 & 析构
+ModuleManagerCore::ModuleManagerCore()
+{
+}
+
+ModuleManagerCore::~ModuleManagerCore()
+{
+  stopSpeedLoop();
+}
+
+// 32 字节固定帧串口协议解析
+std::vector<std::pair<uint8_t, std::vector<uint8_t>>>
+ModuleManagerCore::feedSerialData(const uint8_t* data, size_t len)
+{
+  std::vector<std::pair<uint8_t, std::vector<uint8_t>>> results;
+  rx_frame_.insert(rx_frame_.end(), data, data + len);
+
+  while (true) {
+    auto &buf = rx_frame_;
+    if (buf.size() < PROTO_FRAME_LEN) break;
+
+    auto sof_it = std::search(buf.begin(), buf.end(),
+                              sof_marker_, sof_marker_ + 2);
+    if (sof_it == buf.end()) { buf.clear(); break; }
+    if (sof_it != buf.begin()) buf.erase(buf.begin(), sof_it);
+    if (buf.size() < PROTO_FRAME_LEN) break;
+
+    // CRC16 校验
+    uint16_t recv_crc = static_cast<uint16_t>(buf[PROTO_FRAME_LEN - 2]) |
+                        (static_cast<uint16_t>(buf[PROTO_FRAME_LEN - 1]) << 8);
+    uint16_t calc_crc = calcCRC16(buf.data() + 2, PROTO_FRAME_LEN - 4);
+
+    if (recv_crc != calc_crc) {
+      if (log_cb_) log_cb_(1, "32B帧 CRC16 错误, 丢弃");
+      buf.erase(buf.begin(), buf.begin() + PROTO_FRAME_LEN);
+      continue;
+    }
+
+    uint8_t cmd_type = buf[2];
+    uint8_t pay_len  = buf[3];
+    std::vector<uint8_t> payload(buf.data() + PROTO_HEADER_LEN,
+                                  buf.data() + PROTO_HEADER_LEN +
+                                  std::min(pay_len, static_cast<uint8_t>(PROTO_DATA_LEN)));
+
+    results.emplace_back(cmd_type, std::move(payload));
+    buf.erase(buf.begin(), buf.begin() + PROTO_FRAME_LEN);
+  }
+
+  return results;
+}
+
+// 组帧（32 字节固定帧）
+void ModuleManagerCore::buildSerialFrame(uint8_t cmd_type, const uint8_t *payload,
+                                          size_t payload_len, std::vector<uint8_t> &out)
+{
+  out.clear();
+  out.reserve(PROTO_FRAME_LEN);
+  out.push_back(PROTO_SOF0);
+  out.push_back(PROTO_SOF1);
+  out.push_back(cmd_type);
+  out.push_back(static_cast<uint8_t>(std::min(payload_len, PROTO_DATA_LEN)));
+
+  uint8_t data_field[PROTO_DATA_LEN] = {0};
+  size_t copy_len = std::min(payload_len, PROTO_DATA_LEN);
+  std::memcpy(data_field, payload, copy_len);
+  out.insert(out.end(), data_field, data_field + PROTO_DATA_LEN);
+
+  uint8_t reserved[PROTO_RESERVED] = {0};
+  out.insert(out.end(), reserved, reserved + PROTO_RESERVED);
+
+  uint16_t crc = calcCRC16(out.data() + 2, PROTO_FRAME_LEN - 4);
+  out.push_back(static_cast<uint8_t>(crc & 0xFF));
+  out.push_back(static_cast<uint8_t>((crc >> 8) & 0xFF));
+}
+
+// 速度插值
+void ModuleManagerCore::startSpeedLoop()
+{
+  speed_running_ = true;
+  speed_thread_ = std::thread(&ModuleManagerCore::interpolateSpeedLoop, this);
+}
+
+void ModuleManagerCore::stopSpeedLoop()
+{
+  speed_running_ = false;
+  if (speed_thread_.joinable()) speed_thread_.join();
+}
+
+void ModuleManagerCore::setTargetSpeed(float linear, float angular)
+{
+  target_linear_.store(std::clamp(linear,  -static_cast<float>(LINEAR_MAX), static_cast<float>(LINEAR_MAX)),
+                        std::memory_order_relaxed);
+  target_angular_.store(std::clamp(angular, -static_cast<float>(ANGULAR_MAX), static_cast<float>(ANGULAR_MAX)),
+                         std::memory_order_relaxed);
+}
+
+void ModuleManagerCore::interpolateSpeedLoop()
+{
+  // 这个函数只做纯数学计算，不发布 ROS 消息
+  // Node 层通过 getCurrentSpeed 或回调获取结果
+  // 实际发布在 Node 层完成
+  constexpr double dt = 1.0 / SPEED_INTERPOLATE_HZ;
+
+  while (speed_running_) {
+    float tgt_linear  = target_linear_.load(std::memory_order_relaxed);
+    float tgt_angular = target_angular_.load(std::memory_order_relaxed);
+
+    if (std::abs(tgt_linear - current_linear_) < 0.001f) {
+      current_linear_ = tgt_linear;
+    } else {
+      float step = LINEAR_ACCEL * dt;
+      current_linear_ = (tgt_linear > current_linear_)
+          ? std::min(current_linear_ + step, tgt_linear)
+          : std::max(current_linear_ - step, tgt_linear);
+    }
+
+    if (std::abs(tgt_angular - current_angular_) < 0.001f) {
+      current_angular_ = tgt_angular;
+    } else {
+      float step = ANGULAR_ACCEL * dt;
+      current_angular_ = (tgt_angular > current_angular_)
+          ? std::min(current_angular_ + step, tgt_angular)
+          : std::max(current_angular_ - step, tgt_angular);
+    }
+
+    std::this_thread::sleep_for(std::chrono::duration<double>(dt));
+  }
+}
+
+// 模块状态追踪
+void ModuleManagerCore::updateModuleHeartbeat(const std::string& name, double now)
+{
+  auto it = tracked_modules_.find(name);
+  if (it != tracked_modules_.end()) {
+    it->second.last_msg_time = now;
+    it->second.online = true;
+  }
+}
+=== ./src/core/camera_streamer_core.cpp ===
+#include "module_manager_hub/core/camera_streamer_core.h"
+#include <opencv2/opencv.hpp>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <netinet/tcp.h>
+#include <unistd.h>
+#include <sys/poll.h>
+#include <cstring>
+#include <cerrno>
+#include <cstdio>
+
+CameraStreamerCore::CameraStreamerCore()
+{
+}
+
+CameraStreamerCore::~CameraStreamerCore()
+{
+    cleanupEncoder();
+    if (server_fd_ > 0) { close(server_fd_); server_fd_ = -1; }
+    if (client_fd_ > 0) { close(client_fd_); client_fd_ = -1; }
+}
+
+void CameraStreamerCore::logInfo(const std::string& msg)
+{
+    if (log_cb_) log_cb_(0, msg);
+}
+
+void CameraStreamerCore::logWarn(const std::string& msg)
+{
+    if (log_cb_) log_cb_(1, msg);
+}
+
+void CameraStreamerCore::logError(const std::string& msg)
+{
+    if (log_cb_) log_cb_(2, msg);
+}
+
+// =====================================================================
+// 编码器
+// =====================================================================
+bool CameraStreamerCore::initEncoder(int width, int height, int bitrate_kbps)
+{
+    cleanupEncoder();
+    enc_width_ = width;
+    enc_height_ = height;
+    bitrate_kbps_ = bitrate_kbps;
+
+    const AVCodec *codec = avcodec_find_encoder(AV_CODEC_ID_H264);
+    if (!codec) { logError("找不到 H.264 编码器"); return false; }
+
+    enc_ctx_ = avcodec_alloc_context3(codec);
+    enc_ctx_->width = enc_width_;
+    enc_ctx_->height = enc_height_;
+    enc_ctx_->bit_rate = bitrate_kbps_ * 1000;
+    enc_ctx_->rc_max_rate = (bitrate_kbps_ * 1000) * 2;
+    enc_ctx_->rc_buffer_size = (bitrate_kbps_ * 1000) / 20;
+    enc_ctx_->time_base = {1, 20};
+    enc_ctx_->framerate = {20, 1};
+    enc_ctx_->pix_fmt = AV_PIX_FMT_YUV420P;
+    enc_ctx_->gop_size = 20;
+    enc_ctx_->max_b_frames = 0;
+    av_opt_set(enc_ctx_->priv_data, "preset", "veryfast", 0);
+    av_opt_set(enc_ctx_->priv_data, "tune", "zerolatency", 0);
+    av_opt_set(enc_ctx_->priv_data, "profile", "baseline", 0);
+    av_opt_set(enc_ctx_->priv_data, "me", "dia", 0);
+    av_opt_set(enc_ctx_->priv_data, "subq", "1", 0);
+    av_opt_set(enc_ctx_->priv_data, "trellis", "0", 0);
+    av_opt_set(enc_ctx_->priv_data, "no_dct_decimate", "1", 0);
+    av_opt_set(enc_ctx_->priv_data, "fast_pskip", "1", 0);
+    avcodec_open2(enc_ctx_, codec, nullptr);
+
+    enc_frame_ = av_frame_alloc();
+    enc_frame_->format = enc_ctx_->pix_fmt;
+    enc_frame_->width = enc_width_;
+    enc_frame_->height = enc_height_;
+    av_frame_get_buffer(enc_frame_, 0);
+
+    enc_pkt_ = av_packet_alloc();
+    sws_ctx_ = sws_getContext(enc_width_, enc_height_, AV_PIX_FMT_BGR24,
+                               enc_width_, enc_height_, AV_PIX_FMT_YUV420P,
+                               SWS_BILINEAR, nullptr, nullptr, nullptr);
+    encoder_ready_ = true;
+    pts_ = 0;
+
+    char buf[128];
+    snprintf(buf, sizeof(buf), "编码器初始化完成 %dx%d H.264", enc_width_, enc_height_);
+    logInfo(buf);
+    return true;
+}
+
+void CameraStreamerCore::cleanupEncoder()
+{
+    if (enc_pkt_) { av_packet_free(&enc_pkt_); enc_pkt_ = nullptr; }
+    if (enc_frame_) { av_frame_free(&enc_frame_); enc_frame_ = nullptr; }
+    if (sws_ctx_) { sws_freeContext(sws_ctx_); sws_ctx_ = nullptr; }
+    if (enc_ctx_) { avcodec_free_context(&enc_ctx_); enc_ctx_ = nullptr; }
+    encoder_ready_ = false;
+}
+
+bool CameraStreamerCore::encodeFrame(const cv::Mat &bgr, std::vector<uint8_t> &out, bool force_key)
+{
+    if (!encoder_ready_) return false;
+
+    const int stride[1] = { static_cast<int>(bgr.step[0]) };
+    sws_scale(sws_ctx_, &bgr.data, stride, 0, enc_height_,
+              enc_frame_->data, enc_frame_->linesize);
+
+    if (force_key) enc_frame_->pict_type = AV_PICTURE_TYPE_I;
+    enc_frame_->pts = pts_++;
+
+    int ret = avcodec_send_frame(enc_ctx_, enc_frame_);
+    if (ret < 0) return false;
+
+    out.clear();
+    while (ret >= 0) {
+        ret = avcodec_receive_packet(enc_ctx_, enc_pkt_);
+        if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) break;
+        if (ret < 0) return false;
+        out.insert(out.end(), enc_pkt_->data, enc_pkt_->data + enc_pkt_->size);
+        av_packet_unref(enc_pkt_);
+    }
+    return !out.empty();
+}
+
+// TCP Server
+bool CameraStreamerCore::initTcpServer(int port)
+{
+    port_ = port;
+    if (server_fd_ > 0) { close(server_fd_); server_fd_ = -1; }
+
+    server_fd_ = socket(AF_INET, SOCK_STREAM, 0);
+    if (server_fd_ == -1) return false;
+    int opt = 1;
+    setsockopt(server_fd_, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+    setsockopt(server_fd_, SOL_SOCKET, SO_REUSEPORT, &opt, sizeof(opt));
+
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(port_);
+    addr.sin_addr.s_addr = INADDR_ANY;
+
+    for (int retry = 0; retry < 5; retry++) {
+        if (bind(server_fd_, (sockaddr*)&addr, sizeof(addr)) == 0) {
+            listen(server_fd_, 1);
+            char buf[128];
+            snprintf(buf, sizeof(buf), "TCP server 监听端口 %d", port_);
+            logInfo(buf);
+            return true;
+        }
+        char buf[128];
+        snprintf(buf, sizeof(buf), "端口 %d 绑定失败，重试 %d/5...", port_, retry+1);
+        logWarn(buf);
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+    }
+    char buf[128];
+    snprintf(buf, sizeof(buf), "端口 %d 绑定失败", port_);
+    logError(buf);
+    return false;
+}
+
+// 帧缓存
+void CameraStreamerCore::setFrame(const cv::Mat& frame)
+{
+    std::lock_guard<std::mutex> lock(frame_mutex_);
+    latest_frame_ = frame.clone();
+}
+
+bool CameraStreamerCore::getFrame(cv::Mat& frame)
+{
+    std::lock_guard<std::mutex> lock(frame_mutex_);
+    if (latest_frame_.empty()) return false;
+    frame = latest_frame_.clone();
+    return true;
+}
+
+// 推流主循环
+void CameraStreamerCore::streamLoop(std::atomic<bool>& running,
+                                     std::function<bool()> ok_check)
+{
+    logInfo("推流线程启动");
+
+    // 设置 accept 超时，让退出信号能快速响应
+    int timeout_ms = 1000;
+    setsockopt(server_fd_, SOL_SOCKET, SO_RCVTIMEO, &timeout_ms, sizeof(timeout_ms));
+
+    while (running && (!ok_check || ok_check())) {
+        logInfo("等待客户端连接...");
+        client_fd_ = accept(server_fd_, nullptr, nullptr);
+        if (client_fd_ == -1) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                continue;
+            }
+            logError("accept 失败");
+            break;
+        }
+
+        logInfo("客户端已连接");
+
+        // 设置发送超时
+        struct timeval tv;
+        tv.tv_sec = 1;
+        tv.tv_usec = 0;
+        setsockopt(client_fd_, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+
+        // 禁用 Nagle 算法
+        int flag = 1;
+        setsockopt(client_fd_, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(flag));
+
+        uint64_t frame_idx = 0;
+        while (running && (!ok_check || ok_check())) {
+            cv::Mat frame;
+            if (!getFrame(frame)) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                continue;
+            }
+
+            std::vector<uint8_t> enc_buf;
+            if (!encodeFrame(frame, enc_buf, (frame_idx % 60 == 0))) {
+                continue;
+            }
+
+            // 发送: [帧长度:4B][H264数据]
+            uint32_t frame_len = htonl(static_cast<uint32_t>(enc_buf.size()));
+            ssize_t sent = send(client_fd_, &frame_len, sizeof(frame_len), 0);
+            if (sent <= 0) {
+                logWarn("发送帧长度失败，客户端断开");
+                break;
+            }
+
+            size_t total_sent = 0;
+            while (total_sent < enc_buf.size()) {
+                sent = send(client_fd_, enc_buf.data() + total_sent,
+                            enc_buf.size() - total_sent, 0);
+                if (sent <= 0) {
+                    logWarn("发送帧数据失败，客户端断开");
+                    goto disconnect;
+                }
+                total_sent += sent;
+            }
+
+            frame_idx++;
+        }
+
+disconnect:
+        if (client_fd_ > 0) {
+            close(client_fd_);
+            client_fd_ = -1;
+        }
+        logInfo("客户端断开");
+    }
+}
+=== ./src/core/joy_bridge_core.cpp ===
+#include "module_manager_hub/core/joy_bridge_core.h"
+#include <algorithm>
+#include <cstring>
+
+// 帧头 2 字节 (0xAA 0x55)，避免轴数据中的 0xAA 误同步
+static constexpr size_t   SOF_BYTES = 2;
+static constexpr size_t   CRC_BYTES = 2;
+static constexpr size_t   MAX_AXES  = 16;  // 轴数合理性上限
+static constexpr size_t   MAX_BTNS  = 64;  // 按钮数合理性上限
+
+// =====================================================================
+// CRC16-Modbus，与 Python 端 calc_crc16 一致
+// =====================================================================
+uint16_t JoyBridgeCore::calcCRC16(const uint8_t *data, size_t len)
+{
+  uint16_t crc = 0xFFFF;
+  for (size_t i = 0; i < len; i++) {
+    crc ^= data[i];
+    for (int j = 0; j < 8; j++) {
+      if (crc & 0x0001)
+        crc = (crc >> 1) ^ 0xA001;
+      else
+        crc >>= 1;
+    }
+  }
+  return crc;
+}
+
+JoyBridgeCore::JoyBridgeCore()
+{
+}
+
+void JoyBridgeCore::reset()
+{
+  rx_buf_.clear();
+  frame_count_ = 0;
+}
+
+std::vector<JoyFrameData> JoyBridgeCore::feedData(const uint8_t* data, size_t len)
+{
+  std::vector<JoyFrameData> results;
+  rx_buf_.insert(rx_buf_.end(), data, data + len);
+
+  JoyFrameData frame;
+  while (tryParseFrame(frame)) {
+    // tryParseFrame 返回 true 有两种情况：
+    //   a) 成功解析一帧（frame 有内容）→ 加入 results
+    //   b) CRC/校验失败，跳过字节继续搜索（frame 仍为空）→ 不加入
+    if (!frame.axes.empty() || !frame.buttons.empty()) {
+      results.push_back(std::move(frame));
+    }
+    frame = JoyFrameData{};
+  }
+
+  return results;
+}
+
+// =====================================================================
+// Python 端数据格式（与 _read_joystick_raw 一致）：
+//   [0xAA 0x55:2B][num_axes:1B][axis0:int16LE][axis1:int16LE]...
+//   [num_btns:1B][btn0:uint8][btn1:uint8]...[CRC16:2B LE]
+//   CRC 校验范围：SOF 之后的所有数据（从 num_axes 到最后一个按钮）
+// =====================================================================
+bool JoyBridgeCore::tryParseFrame(JoyFrameData& out)
+{
+  // 找帧头 0xAA 0x55 (2字节)
+  if (rx_buf_.size() < SOF_BYTES) return false;
+
+  const uint8_t sof_bytes[SOF_BYTES] = {0xAA, 0x55};
+  auto it = std::search(rx_buf_.begin(), rx_buf_.end(),
+                        sof_bytes, sof_bytes + SOF_BYTES);
+  if (it == rx_buf_.end()) {
+    // 未找到帧头，清空缓存
+    rx_buf_.clear();
+    return false;
+  }
+
+  // 丢掉帧头之前的垃圾数据
+  if (it != rx_buf_.begin()) {
+    rx_buf_.erase(rx_buf_.begin(), it);
+  }
+
+  // 至少需要 SOF(2) + num_axes(1) = 3 字节
+  if (rx_buf_.size() < SOF_BYTES + 1) return false;
+
+  uint8_t num_axes = rx_buf_[SOF_BYTES];
+
+  // ---- 合理性校验 ----
+  if (num_axes == 0 || num_axes > MAX_AXES) {
+    // 无效轴数，跳过头两个字节继续搜索
+    rx_buf_.erase(rx_buf_.begin(), rx_buf_.begin() + 1);
+    return true;  // 继续尝试
+  }
+
+  // 最小帧: SOF(2) + num_axes(1) + axes(N*2) + num_btns(1)
+  size_t min_len = SOF_BYTES + 1 + num_axes * 2 + 1;
+  if (rx_buf_.size() < min_len) return false;
+
+  // 读按钮数量
+  size_t btn_off = SOF_BYTES + 1 + num_axes * 2;
+  uint8_t num_btns = rx_buf_[btn_off];
+
+  // ---- 按钮数合理性校验 ----
+  if (num_btns > MAX_BTNS) {
+    // 无效按钮数，说明帧同步丢失，跳过头两个字节
+    rx_buf_.erase(rx_buf_.begin(), rx_buf_.begin() + 1);
+    return true;
+  }
+
+  // 完整帧长（含 CRC16 2 字节）
+  size_t frame_len = SOF_BYTES + 1 + num_axes * 2 + 1 + num_btns + CRC_BYTES;
+  if (rx_buf_.size() < frame_len) return false;
+
+  // ---- CRC16 校验 ----
+  // CRC 校验范围：从 num_axes 到最后一个按钮（不含 CRC 本身）
+  size_t crc_data_len = 1 + num_axes * 2 + 1 + num_btns;
+  uint16_t recv_crc = static_cast<uint16_t>(rx_buf_[frame_len - 2]) |
+                      (static_cast<uint16_t>(rx_buf_[frame_len - 1]) << 8);
+  uint16_t calc_crc = calcCRC16(&rx_buf_[SOF_BYTES], crc_data_len);
+  if (recv_crc != calc_crc) {
+    // CRC 错误，可能是帧同步丢失，跳过一个字节继续搜索
+    rx_buf_.erase(rx_buf_.begin(), rx_buf_.begin() + 1);
+    return true;
+  }
+
+  // 解析轴: int16 LE → float (-32767~32767 → -1.0~1.0)
+  out.axes.reserve(num_axes);
+  for (size_t i = 0; i < num_axes; i++) {
+    size_t off = SOF_BYTES + 1 + i * 2;
+    int16_t raw = static_cast<int16_t>(rx_buf_[off]) |
+                  (static_cast<int16_t>(rx_buf_[off + 1]) << 8);
+    float val = static_cast<float>(raw) / 32767.0f;
+    val = std::max(-1.0f, std::min(1.0f, val));
+    out.axes.push_back(val);
+  }
+
+  // 解析按钮
+  out.buttons.reserve(num_btns);
+  for (size_t i = 0; i < num_btns; i++) {
+    size_t off = SOF_BYTES + 1 + num_axes * 2 + 1 + i;
+    out.buttons.push_back(rx_buf_[off] ? 1 : 0);
+  }
+
+  // 移除已处理的帧
+  rx_buf_.erase(rx_buf_.begin(), rx_buf_.begin() + frame_len);
+  frame_count_++;
+
+  return true;  // 可能还有更多帧
+}
+=== ./src/common/serial_reader.cpp ===
+#include "module_manager_hub/common/serial_reader.h"
+#include <cstdio>
+
+// 构造 & 析构
+SerialReader::SerialReader()
+    : serial_port_(io_context_)
+{
+}
+
+SerialReader::~SerialReader()
+{
+    close();
+}
+
+// 打开 / 关闭
+bool SerialReader::open(const std::string& port, int baud_rate)
+{
+    try {
+        serial_port_.open(port);
+        serial_port_.set_option(boost::asio::serial_port::baud_rate(baud_rate));
+        serial_port_.set_option(boost::asio::serial_port::flow_control(
+            boost::asio::serial_port::flow_control::none));
+        serial_port_.set_option(boost::asio::serial_port::parity(
+            boost::asio::serial_port::parity::none));
+        serial_port_.set_option(boost::asio::serial_port::stop_bits(
+            boost::asio::serial_port::stop_bits::one));
+        serial_port_.set_option(boost::asio::serial_port::character_size(8));
+
+        running_ = true;
+        doRead();
+        io_thread_ = std::thread([this]() { io_context_.run(); });
+
+        printf("[SerialReader] 串口已打开: %s @ %d baud\n", port.c_str(), baud_rate);
+        return true;
+    } catch (std::exception& e) {
+        fprintf(stderr, "[SerialReader] 串口打开失败 %s: %s\n", port.c_str(), e.what());
+        return false;
+    }
+}
+
+void SerialReader::close()
+{
+    running_ = false;
+    if (serial_port_.is_open()) {
+        boost::system::error_code ec;
+        serial_port_.close(ec);
+    }
+    io_context_.stop();
+    if (io_thread_.joinable()) io_thread_.join();
+}
+
+bool SerialReader::is_open() const
+{
+    return serial_port_.is_open();
+}
+
+// 异步读取
+void SerialReader::doRead()
+{
+    serial_port_.async_read_some(boost::asio::buffer(rx_buf_),
+        [this](boost::system::error_code ec, std::size_t bytes) {
+            if (ec) {
+                if (running_) {
+                    fprintf(stderr, "[SerialReader] 读错误: %s\n", ec.message().c_str());
+                    doRead();
+                }
+                return;
+            }
+            if (data_cb_) {
+                data_cb_(rx_buf_.data(), bytes);
+            }
+            doRead();
+        });
+}
+
+// 写
+void SerialReader::write(const uint8_t* data, size_t len)
+{
+    boost::system::error_code ec;
+    boost::asio::write(serial_port_, boost::asio::buffer(data, len), ec);
+    if (ec) {
+        fprintf(stderr, "[SerialReader] 同步写失败: %s\n", ec.message().c_str());
+    }
+}
+
+void SerialReader::writeAsync(const uint8_t* data, size_t len)
+{
+    auto buf = std::make_shared<std::vector<uint8_t>>(data, data + len);
+    boost::asio::async_write(serial_port_, boost::asio::buffer(*buf),
+        [this, buf](boost::system::error_code ec, std::size_t /*bytes*/) {
+            if (ec) {
+                fprintf(stderr, "[SerialReader] 异步写失败: %s\n", ec.message().c_str());
+            }
+        });
+}
+=== ./config/modules.yaml ===
+# ========== module_manager_hub 配置 ==========
+# 当前运行：CameraStreamer + HeartbeatCollector
+# ModuleManager/SerialJoyBridge 阶段二启用
+
+# ---- 心跳汇聚配置 ----
+# 注意：同进程内的服务（camera_streamer / serial_joy_bridge / module_manager）
+# 不需要心跳监控——进程活着就是全部活着。只监控外部独立进程。
+heartbeat:
+  # 心跳文件目录（Runtime MonitorManager 读取）
+  heartbeat_dir: "/tmp/runtime_hb"
+  # 超时阈值（秒）
+  timeout_sec: 8.0
+  # 被监控的外部服务（svc_id 为二进制 UDP 协议的服务 ID）
+  targets:
+    - name: motion_service
+      svc_id: 2
+      topic: "/robot/motion/heartbeat"
+      msg_type: "std_msgs/msg/String"
+    - name: remote_control
+      svc_id: 3
+      topic: "/robot/remote_control/heartbeat"
+      msg_type: "std_msgs/msg/String"=== ./config/serial_joy_bridge.yaml ===
+# ========== 串口摇杆桥接配置 ==========
+serial:
+  port: "/dev/ttyUSB0"
+  baud_rate: 115200
+=== ./test/test_heartbeat_core.cpp ===
+/// @file test_heartbeat_core.cpp
+/// 纯 C++ 单测（无 ROS）：HeartbeatCollectorCore
+
+#include "module_manager_hub/core/heartbeat_collector_core.h"
+#include <cstdio>
+#include <cassert>
+#include <cmath>
+#include <filesystem>
+#include <fstream>
+#include <cstring>
+#include <unistd.h>
+
+namespace fs = std::filesystem;
+
+// =====================================================================
+// 辅助：构造 HeartbeatTarget
+// =====================================================================
+static HeartbeatCollectorCore::HeartbeatTarget makeTarget(const std::string& name,
+                                                           uint16_t svc_id) {
+  HeartbeatCollectorCore::HeartbeatTarget t;
+  t.name   = name;
+  t.topic  = "/robot/" + name + "/heartbeat";
+  t.svc_id = svc_id;
+  return t;
+}
+
+// =====================================================================
+// 测试用例
+// =====================================================================
+
+static void test_heartbeat_mark_online() {
+  printf("[TEST] test_heartbeat_mark_online ... ");
+  HeartbeatCollectorCore core;
+
+  auto t = makeTarget("test_svc", 1);
+  core.loadConfig("", 8.0, "", 0, {t});
+
+  core.onHeartbeat("test_svc", 100.0);
+  assert(core.targets().size() == 1);
+  assert(core.targets()[0].state == SVC_ONLINE);
+  assert(core.targets()[0].last_time == 100.0);
+
+  printf("PASS\n");
+}
+
+static void test_heartbeat_timeout_offline() {
+  printf("[TEST] test_heartbeat_timeout_offline ... ");
+  HeartbeatCollectorCore core;
+
+  auto t = makeTarget("svc_a", 1);
+  core.loadConfig("", 5.0, "", 0, {t});
+
+  core.onHeartbeat("svc_a", 100.0);
+  assert(core.targets()[0].state == SVC_ONLINE);
+
+  // 4 秒后：未超时
+  core.checkTimeout(104.0);
+  assert(core.targets()[0].state == SVC_ONLINE);
+
+  // 再 2 秒后（共 6s > timeout=5s）：应超时
+  core.checkTimeout(106.0);
+  assert(core.targets()[0].state == SVC_OFFLINE);
+
+  printf("PASS\n");
+}
+
+static void test_heartbeat_recover_after_timeout() {
+  printf("[TEST] test_heartbeat_recover_after_timeout ... ");
+  HeartbeatCollectorCore core;
+
+  auto t = makeTarget("svc_b", 2);
+  core.loadConfig("", 3.0, "", 0, {t});
+
+  core.onHeartbeat("svc_b", 100.0);
+
+  // 超时
+  core.checkTimeout(104.0);
+  assert(core.targets()[0].state == SVC_OFFLINE);
+
+  // 恢复心跳
+  core.onHeartbeat("svc_b", 105.0);
+  assert(core.targets()[0].state == SVC_ONLINE);
+  assert(core.targets()[0].last_time == 105.0);
+
+  printf("PASS\n");
+}
+
+static void test_multiple_targets() {
+  printf("[TEST] test_multiple_targets ... ");
+  HeartbeatCollectorCore core;
+
+  auto t1 = makeTarget("svc_a", 1);
+  auto t2 = makeTarget("svc_b", 2);
+  auto t3 = makeTarget("svc_c", 3);
+  core.loadConfig("", 5.0, "", 0, {t1, t2, t3});
+
+  core.onHeartbeat("svc_a", 100.0);
+  core.onHeartbeat("svc_c", 100.0);
+  // svc_b 没有心跳
+
+  assert(core.targets()[0].state == SVC_ONLINE);
+  assert(core.targets()[1].state == SVC_OFFLINE);
+  assert(core.targets()[2].state == SVC_ONLINE);
+
+  // 超时检测
+  core.checkTimeout(110.0);
+  assert(core.targets()[0].state == SVC_OFFLINE);  // svc_a 超时
+  assert(core.targets()[1].state == SVC_OFFLINE);  // svc_b 仍离线
+  assert(core.targets()[2].state == SVC_OFFLINE);  // svc_c 超时
+
+  printf("PASS\n");
+}
+
+static void test_heartbeat_file_written() {
+  printf("[TEST] test_heartbeat_file_written ... ");
+
+  // 使用临时目录
+  const std::string dir = "/tmp/hb_test_" + std::to_string(getpid());
+  fs::remove_all(dir);
+
+  HeartbeatCollectorCore core;
+  auto t = makeTarget("test_svc", 1);
+  core.loadConfig(dir, 8.0, "", 0, {t});
+
+  core.onHeartbeat("test_svc", 1234.567);
+  assert(fs::exists(dir + "/test_svc"));
+
+  // 检查文件内容
+  std::ifstream f(dir + "/test_svc");
+  std::string content;
+  std::getline(f, content);
+  printf("  file content: '%s'\n", content.c_str());
+  double val = std::stod(content);
+  assert(std::abs(val - 1234.567) < 0.001);
+
+  // 超时后文件应被清理
+  core.checkTimeout(1300.0);
+  assert(!fs::exists(dir + "/test_svc"));
+
+  fs::remove_all(dir);
+  printf("PASS\n");
+}
+
+static void test_crc32_correctness() {
+  printf("[TEST] test_crc32_correctness ... ");
+
+  // 已知值校验：空数据 CRC32 = 0x00000000
+  uint32_t crc_empty = HeartbeatCollectorCore::calcCRC32(nullptr, 0);
+  // 注：空指针传给 calcCRC32 会出问题，传一个空数组
+  uint8_t empty = 0;
+  crc_empty = HeartbeatCollectorCore::calcCRC32(&empty, 0);
+  // CRC32("") = 0x00000000
+  assert(crc_empty == 0x00000000);
+
+  // "123456789" 的标准 CRC32 = 0xCBF43926
+  const char* test_str = "123456789";
+  uint32_t crc = HeartbeatCollectorCore::calcCRC32(
+      reinterpret_cast<const uint8_t*>(test_str), 9);
+  assert(crc == 0xCBF43926);
+
+  printf("PASS\n");
+}
+
+static void test_svc_id_not_set() {
+  printf("[TEST] test_svc_id_not_set ... ");
+  HeartbeatCollectorCore core;
+
+  // 默认 svc_id = 0
+  HeartbeatCollectorCore::HeartbeatTarget t;
+  t.name = "no_id";
+  core.loadConfig("", 8.0, "", 0, {t});
+
+  assert(core.targets()[0].svc_id == 0);
+  assert(core.targets()[0].state == SVC_OFFLINE);
+
+  // 收到心跳后应改为 ONLINE
+  core.onHeartbeat("no_id", 42.0);
+  assert(core.targets()[0].state == SVC_ONLINE);
+
+  printf("PASS\n");
+}
+
+int main() {
+  printf("===== HeartbeatCollectorCore Unit Tests =====\n\n");
+
+  test_heartbeat_mark_online();
+  test_heartbeat_timeout_offline();
+  test_heartbeat_recover_after_timeout();
+  test_multiple_targets();
+  test_heartbeat_file_written();
+  test_crc32_correctness();
+  test_svc_id_not_set();
+
+  printf("\n===== All %s tests PASSED =====\n", "HeartbeatCollectorCore");
+  return 0;
+}
+=== ./test/test_camera_streamer_core.cpp ===
+/// @file test_camera_streamer_core.cpp
+/// 纯 C++ 单测（无 ROS）：CameraStreamerCore
+///
+/// 测试内容：
+///   - 帧缓存 setFrame / getFrame
+///   - 日志回调注入
+///   - H.264 编码器初始化 & 编码（需 FFmpeg 支持）
+///   - TCP server 端口绑定
+///   - 推流循环启停
+
+#include "module_manager_hub/core/camera_streamer_core.h"
+#include <cstdio>
+#include <cassert>
+#include <opencv2/opencv.hpp>
+#include <thread>
+#include <chrono>
+#include <atomic>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <unistd.h>
+
+// =====================================================================
+// 测试用例
+// =====================================================================
+
+static void test_frame_buffer() {
+  printf("[TEST] test_frame_buffer ... ");
+  CameraStreamerCore core;
+
+  // 初始无帧
+  cv::Mat frame;
+  assert(core.getFrame(frame) == false);
+
+  // 设置一帧
+  cv::Mat test_img(480, 640, CV_8UC3, cv::Scalar(128, 128, 128));
+  core.setFrame(test_img);
+
+  // 读取
+  assert(core.getFrame(frame) == true);
+  assert(frame.rows == 480);
+  assert(frame.cols == 640);
+  assert(frame.type() == CV_8UC3);
+
+  // 读取后帧仍保留（不是消费语义）
+  cv::Mat frame2;
+  assert(core.getFrame(frame2) == true);
+  assert(frame2.rows == 480);
+
+  printf("PASS\n");
+}
+
+static void test_frame_buffer_thread_safety() {
+  printf("[TEST] test_frame_buffer_thread_safety ... ");
+  CameraStreamerCore core;
+
+  std::atomic<bool> running{true};
+
+  // 写入线程：不断更新帧
+  std::thread writer([&]() {
+    for (int i = 0; i < 100 && running; i++) {
+      cv::Mat img(480, 640, CV_8UC3, cv::Scalar(i % 256, i % 256, i % 256));
+      core.setFrame(img);
+      std::this_thread::yield();
+    }
+  });
+
+  // 读取线程：不断读取帧
+  std::thread reader([&]() {
+    for (int i = 0; i < 100 && running; i++) {
+      cv::Mat frame;
+      core.getFrame(frame);
+      std::this_thread::yield();
+    }
+  });
+
+  writer.join();
+  reader.join();
+
+  printf("PASS\n");
+}
+
+static void test_log_callback() {
+  printf("[TEST] test_log_callback ... ");
+  CameraStreamerCore core;
+
+  int log_count = 0;
+  core.setLogCallback([&](int level, const std::string& msg) {
+    log_count++;
+    assert(level >= 0 && level <= 2);
+    assert(!msg.empty());
+  });
+
+  // initEncoder 会触发日志（如果 FFmpeg 不可用也会触发 error 日志）
+  bool ok = core.initEncoder(640, 480, 3000);
+  // 不管 encoder 是否成功，回调至少被调用了一次
+  assert(log_count > 0);
+  printf("PASS (log_count=%d, encoder_ok=%d)\n", log_count, ok);
+}
+
+static void test_encoder_init_and_encode() {
+  printf("[TEST] test_encoder_init_and_encode ... ");
+  CameraStreamerCore core;
+
+  bool ok = core.initEncoder(320, 240, 500);  // 低分辨率低码率
+  if (!ok) {
+    printf("SKIP (FFmpeg H.264 encoder not available)\n");
+    return;
+  }
+
+  assert(core.width() == 320);
+  assert(core.height() == 240);
+  assert(core.bitrate() == 500);
+
+  // 构造一张测试图像
+  cv::Mat test_img(240, 320, CV_8UC3, cv::Scalar(64, 128, 192));
+  // 加一些变化，让编码器有东西可编
+  cv::rectangle(test_img, cv::Rect(50, 50, 100, 100), cv::Scalar(255, 0, 0), -1);
+
+  // 编码为关键帧
+  std::vector<uint8_t> encoded;
+  bool enc_ok = core.encodeFrame(test_img, encoded, true);
+  assert(enc_ok);
+  assert(!encoded.empty());
+  printf("  encoded size=%zu bytes\n", encoded.size());
+
+  // 编码第二帧（非关键帧）
+  enc_ok = core.encodeFrame(test_img, encoded, false);
+  assert(enc_ok);
+  assert(!encoded.empty());
+
+  // cleanup 后不应崩溃
+  core.cleanupEncoder();
+
+  printf("PASS\n");
+}
+
+static void test_encoder_reinit() {
+  printf("[TEST] test_encoder_reinit ... ");
+  CameraStreamerCore core;
+
+  bool ok = core.initEncoder(320, 240, 500);
+  if (!ok) {
+    printf("SKIP (FFmpeg H.264 encoder not available)\n");
+    return;
+  }
+
+  // 重新初始化（不同分辨率）
+  ok = core.initEncoder(640, 480, 1000);
+  assert(ok);
+  assert(core.width() == 640);
+  assert(core.height() == 480);
+
+  cv::Mat test_img(480, 640, CV_8UC3, cv::Scalar(0, 255, 0));
+  std::vector<uint8_t> encoded;
+  assert(core.encodeFrame(test_img, encoded, true));
+  assert(!encoded.empty());
+
+  printf("PASS\n");
+}
+
+static void test_tcp_server_bind() {
+  printf("[TEST] test_tcp_server_bind ... ");
+  CameraStreamerCore core;
+
+  // 绑定有效端口
+  bool ok = core.initTcpServer(18996);
+  assert(ok);
+
+  printf("PASS\n");
+}
+
+static void test_stream_loop_start_stop() {
+  printf("[TEST] test_stream_loop_start_stop ... ");
+  CameraStreamerCore core;
+
+  bool enc_ok = core.initEncoder(320, 240, 500);
+  if (!enc_ok) {
+    printf("SKIP (encoder not available)\n");
+    return;
+  }
+  assert(core.initTcpServer(18997));
+
+  // 放一帧进去
+  cv::Mat test_img(240, 320, CV_8UC3, cv::Scalar(100, 150, 200));
+  core.setFrame(test_img);
+
+  // 启动推流线程
+  std::atomic<bool> running{true};
+  std::thread t(&CameraStreamerCore::streamLoop, &core,
+                std::ref(running),
+                []() { return true; });
+
+  // 连接客户端，让 accept 立即返回，随后 running=false 退出循环
+  std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  int sock = socket(AF_INET, SOCK_STREAM, 0);
+  struct sockaddr_in addr{};
+  addr.sin_family = AF_INET;
+  addr.sin_port = htons(18997);
+  inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
+  connect(sock, (struct sockaddr*)&addr, sizeof(addr));
+
+  std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  running = false;
+  close(sock);
+  t.join();
+
+  printf("PASS\n");
+}
+
+int main() {
+  printf("===== CameraStreamerCore Unit Tests =====\n\n");
+
+  test_frame_buffer();
+  test_frame_buffer_thread_safety();
+  test_log_callback();
+  test_encoder_init_and_encode();
+  test_encoder_reinit();
+  test_tcp_server_bind();
+  test_stream_loop_start_stop();
+
+  printf("\n===== All %s tests PASSED =====\n", "CameraStreamerCore");
+  return 0;
+}
+=== ./test/test_module_manager_core.cpp ===
+/// @file test_module_manager_core.cpp
+/// 纯 C++ 单测（无 ROS）：ModuleManagerCore
+
+#include "module_manager_hub/core/module_manager_core.h"
+#include <cstdio>
+#include <cstring>
+#include <cassert>
+#include <cmath>
+#include <thread>
+#include <chrono>
+
+// =====================================================================
+// CRC16-Modbus 辅助（与 Core 内部算法一致）
+// =====================================================================
+static uint16_t crc16(const uint8_t *data, size_t len) {
+  uint16_t crc = 0xFFFF;
+  for (size_t i = 0; i < len; i++) {
+    crc ^= data[i];
+    for (int j = 0; j < 8; j++) {
+      if (crc & 0x0001) crc = (crc >> 1) ^ 0xA001;
+      else              crc >>= 1;
+    }
+  }
+  return crc;
+}
+
+/// 构造一帧合法的 32 字节遥控指令
+/// @param cmd_type  指令类型 (CMD_MOVE / CMD_TASK / CMD_HEARTBEAT)
+/// @param payload   载荷数据（最多 PROTO_DATA_LEN=16 字节）
+/// @param pay_len   载荷长度
+/// @param out       输出完整 32 字节帧
+static void build32Frame(uint8_t cmd_type,
+                          const uint8_t* payload, size_t pay_len,
+                          std::vector<uint8_t>& out) {
+  out.clear();
+  out.reserve(32);
+  out.push_back(0xAA);  // SOF0
+  out.push_back(0x55);  // SOF1
+  out.push_back(cmd_type);
+  out.push_back(static_cast<uint8_t>(pay_len < 16 ? pay_len : 16));
+
+  // Data 字段（16 字节，不足补零）
+  uint8_t data_field[16] = {0};
+  size_t copy_len = pay_len < 16 ? pay_len : 16;
+  std::memcpy(data_field, payload, copy_len);
+  out.insert(out.end(), data_field, data_field + 16);
+
+  // Reserved 字段（10 字节，全零）
+  out.insert(out.end(), 10, 0);
+
+  // CRC16：从 CmdType 到 Reserved 末尾（共 28 字节）
+  uint16_t crc = crc16(out.data() + 2, 28);
+  out.push_back(static_cast<uint8_t>(crc & 0xFF));
+  out.push_back(static_cast<uint8_t>((crc >> 8) & 0xFF));
+
+  assert(out.size() == 32);
+}
+
+// =====================================================================
+// 测试用例
+// =====================================================================
+
+static void test_parse_cmd_move() {
+  printf("[TEST] test_parse_cmd_move ... ");
+  ModuleManagerCore core;
+
+  // CMD_MOVE: 2 个 float（linear, angular）= 8 字节
+  float linear  = 0.5f;
+  float angular = -0.3f;
+  uint8_t payload[8];
+  std::memcpy(payload, &linear, 4);
+  std::memcpy(payload + 4, &angular, 4);
+
+  std::vector<uint8_t> frame;
+  build32Frame(CMD_MOVE, payload, 8, frame);
+
+  auto results = core.feedSerialData(frame.data(), frame.size());
+
+  assert(results.size() == 1);
+  assert(results[0].first == CMD_MOVE);
+  assert(results[0].second.size() == 8);  // pay_len=8 所以 payload 8 字节
+
+  float parsed_linear, parsed_angular;
+  std::memcpy(&parsed_linear,  results[0].second.data(), 4);
+  std::memcpy(&parsed_angular, results[0].second.data() + 4, 4);
+  assert(std::abs(parsed_linear - 0.5f) < 0.001f);
+  assert(std::abs(parsed_angular - (-0.3f)) < 0.001f);
+
+  printf("PASS\n");
+}
+
+static void test_parse_cmd_task() {
+  printf("[TEST] test_parse_cmd_task ... ");
+  ModuleManagerCore core;
+
+  // CMD_TASK: task_id = 3（PERFORM）
+  uint8_t payload[] = {3};
+  std::vector<uint8_t> frame;
+  build32Frame(CMD_TASK, payload, 1, frame);
+
+  auto results = core.feedSerialData(frame.data(), frame.size());
+
+  assert(results.size() == 1);
+  assert(results[0].first == CMD_TASK);
+  assert(results[0].second.size() == 1);
+  assert(results[0].second[0] == 3);
+
+  printf("PASS\n");
+}
+
+static void test_parse_cmd_heartbeat_emergency() {
+  printf("[TEST] test_parse_cmd_heartbeat_emergency ... ");
+  ModuleManagerCore core;
+
+  // CMD_HEARTBEAT: 无载荷
+  std::vector<uint8_t> frame;
+  build32Frame(CMD_HEARTBEAT, nullptr, 0, frame);
+
+  auto results = core.feedSerialData(frame.data(), frame.size());
+
+  assert(results.size() == 1);
+  assert(results[0].first == CMD_HEARTBEAT);
+
+  printf("PASS\n");
+}
+
+static void test_crc16_mismatch_rejected() {
+  printf("[TEST] test_crc16_mismatch_rejected ... ");
+  ModuleManagerCore core;
+
+  float linear = 0.0f, angular = 0.0f;
+  uint8_t payload[8];
+  std::memcpy(payload, &linear, 4);
+  std::memcpy(payload + 4, &angular, 4);
+
+  std::vector<uint8_t> frame;
+  build32Frame(CMD_MOVE, payload, 8, frame);
+
+  // 篡改一个字节
+  frame[20] ^= 0xFF;
+
+  auto results = core.feedSerialData(frame.data(), frame.size());
+  assert(results.empty());
+
+  printf("PASS\n");
+}
+
+static void test_multiple_frames_in_one() {
+  printf("[TEST] test_multiple_frames_in_one ... ");
+  ModuleManagerCore core;
+
+  uint8_t task_payload[] = {5};
+  std::vector<uint8_t> f1, f2;
+  build32Frame(CMD_TASK, task_payload, 1, f1);
+  build32Frame(CMD_HEARTBEAT, nullptr, 0, f2);
+
+  // 拼接两帧
+  std::vector<uint8_t> combined = f1;
+  combined.insert(combined.end(), f2.begin(), f2.end());
+
+  auto results = core.feedSerialData(combined.data(), combined.size());
+  assert(results.size() == 2);
+  assert(results[0].first == CMD_TASK);
+  assert(results[1].first == CMD_HEARTBEAT);
+
+  printf("PASS\n");
+}
+
+static void test_garbage_before_sof_skipped() {
+  printf("[TEST] test_garbage_before_sof_skipped ... ");
+  ModuleManagerCore core;
+
+  uint8_t payload[] = {1};
+  std::vector<uint8_t> frame;
+  build32Frame(CMD_TASK, payload, 1, frame);
+
+  // 前面加垃圾
+  std::vector<uint8_t> noisy;
+  noisy.push_back(0x00);
+  noisy.push_back(0xFF);
+  noisy.push_back(0xAA);  // 单个 0xAA 不构成 SOF
+  noisy.insert(noisy.end(), frame.begin(), frame.end());
+
+  auto results = core.feedSerialData(noisy.data(), noisy.size());
+  assert(results.size() == 1);
+  assert(results[0].first == CMD_TASK);
+
+  printf("PASS\n");
+}
+
+static void test_build_serial_frame_roundtrip() {
+  printf("[TEST] test_build_serial_frame_roundtrip ... ");
+  ModuleManagerCore core;
+
+  // 组帧 → 解析回环测试
+  uint8_t original[] = {0x01, 0x02, 0x03, 0x04};
+  std::vector<uint8_t> frame;
+  core.buildSerialFrame(CMD_STATUS, original, 4, frame);
+
+  assert(frame.size() == 32);
+
+  // 回环解析
+  auto results = core.feedSerialData(frame.data(), frame.size());
+  assert(results.size() == 1);
+  assert(results[0].first == CMD_STATUS);
+  assert(results[0].second.size() == 4);
+  assert(std::memcmp(results[0].second.data(), original, 4) == 0);
+
+  printf("PASS\n");
+}
+
+static void test_set_target_speed() {
+  printf("[TEST] test_set_target_speed ... ");
+  ModuleManagerCore core;
+
+  core.setTargetSpeed(0.5f, -0.3f);
+  assert(std::abs(core.targetLinear().load() - 0.5f) < 0.001f);
+  assert(std::abs(core.targetAngular().load() - (-0.3f)) < 0.001f);
+
+  // 测试截断（超出 LINEAR_MAX=0.6 / ANGULAR_MAX=1.0）
+  core.setTargetSpeed(10.0f, 10.0f);
+  assert(core.targetLinear().load() <= 0.6f);
+  assert(core.targetAngular().load() <= 1.0f);
+
+  printf("PASS\n");
+}
+
+static void test_speed_interpolation() {
+  printf("[TEST] test_speed_interpolation ... ");
+  ModuleManagerCore core;
+
+  // 设置目标速度并启动插值线程
+  core.setTargetSpeed(0.4f, 0.0f);
+  core.startSpeedLoop();
+
+  // 等待几轮插值
+  std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+  float cl = core.currentLinear();
+  // 经过 ~50ms (4 次 80Hz 迭代)，速度应从 0 开始上升
+  // LINEAR_ACCEL * dt = 0.2 * 0.0125 = 0.0025 每次迭代
+  // 4 次迭代：~0.01
+  assert(cl > 0.0f);
+  assert(cl <= 0.4f);
+
+  // 设回零
+  core.setTargetSpeed(0.0f, 0.0f);
+  std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+  core.stopSpeedLoop();
+  printf("PASS (linear=%.4f)\n", cl);
+}
+
+static void test_module_heartbeat_tracking() {
+  printf("[TEST] test_module_heartbeat_tracking ... ");
+  ModuleManagerCore core;
+
+  // 模拟 Node 层添加追踪模块
+  TrackedModule tm;
+  tm.name = "test_mod";
+  tm.watch_topic = "/test/topic";
+  core.trackedModules()["test_mod"] = tm;
+
+  assert(core.trackedModules()["test_mod"].online == false);
+
+  core.updateModuleHeartbeat("test_mod", 100.0);
+  assert(core.trackedModules()["test_mod"].online == true);
+  assert(core.trackedModules()["test_mod"].last_msg_time == 100.0);
+
+  printf("PASS\n");
+}
+
+int main() {
+  printf("===== ModuleManagerCore Unit Tests =====\n\n");
+
+  test_parse_cmd_move();
+  test_parse_cmd_task();
+  test_parse_cmd_heartbeat_emergency();
+  test_crc16_mismatch_rejected();
+  test_multiple_frames_in_one();
+  test_garbage_before_sof_skipped();
+  test_build_serial_frame_roundtrip();
+  test_set_target_speed();
+  test_speed_interpolation();
+  test_module_heartbeat_tracking();
+
+  printf("\n===== All %s tests PASSED =====\n", "ModuleManagerCore");
+  return 0;
+}
+=== ./test/readme.md ===
+# 编译
+colcon build --packages-select module_manager_hub
+
+# 运行单测（无需 ROS runtime）
+./build/module_manager_hub/test_joy_bridge_core
+./build/module_manager_hub/test_heartbeat_core
+./build/module_manager_hub/test_module_manager_core
+./build/module_manager_hub/test_camera_streamer_core=== ./test/test_joy_bridge_core.cpp ===
+/// @file test_joy_bridge_core.cpp
+/// 纯 C++ 单测（无 ROS）：JoyBridgeCore 协议解析
+
+#include "module_manager_hub/core/joy_bridge_core.h"
+#include <cstdio>
+#include <cstring>
+#include <cassert>
+
+// =====================================================================
+// CRC16-Modbus 辅助（与 Core 内部算法一致）
+// =====================================================================
+static uint16_t crc16(const uint8_t *data, size_t len) {
+  uint16_t crc = 0xFFFF;
+  for (size_t i = 0; i < len; i++) {
+    crc ^= data[i];
+    for (int j = 0; j < 8; j++) {
+      if (crc & 0x0001) crc = (crc >> 1) ^ 0xA001;
+      else              crc >>= 1;
+    }
+  }
+  return crc;
+}
+
+/// 构造一帧合法的摇杆数据
+/// @param axes      每个轴的值（-1.0 ~ 1.0，将转换为 int16 LE）
+/// @param buttons   每个按钮 0/1
+/// @param out       输出完整帧（含 SOF + CRC）
+static void buildJoyFrame(const float* axes, size_t num_axes,
+                          const uint8_t* buttons, size_t num_btns,
+                          std::vector<uint8_t>& out) {
+  out.clear();
+  out.push_back(0xAA);
+  out.push_back(0x55);
+  out.push_back(static_cast<uint8_t>(num_axes));
+
+  for (size_t i = 0; i < num_axes; i++) {
+    int16_t raw = static_cast<int16_t>(axes[i] * 32767.0f);
+    out.push_back(static_cast<uint8_t>(raw & 0xFF));
+    out.push_back(static_cast<uint8_t>((raw >> 8) & 0xFF));
+  }
+
+  out.push_back(static_cast<uint8_t>(num_btns));
+  out.insert(out.end(), buttons, buttons + num_btns);
+
+  // CRC16：从 num_axes 到最后一个按钮
+  uint16_t crc = crc16(out.data() + 2, out.size() - 2);
+  out.push_back(static_cast<uint8_t>(crc & 0xFF));
+  out.push_back(static_cast<uint8_t>((crc >> 8) & 0xFF));
+}
+
+// =====================================================================
+// 测试用例
+// =====================================================================
+
+static void test_parse_valid_frame() {
+  printf("[TEST] test_parse_valid_frame ... ");
+  JoyBridgeCore core;
+
+  float axes[] = {0.5f, -0.5f};
+  uint8_t btns[] = {1, 0, 1, 0};
+
+  std::vector<uint8_t> frame;
+  buildJoyFrame(axes, 2, btns, 4, frame);
+
+  auto results = core.feedData(frame.data(), frame.size());
+
+  assert(results.size() == 1);
+  assert(results[0].axes.size() == 2);
+  assert(results[0].buttons.size() == 4);
+  assert(results[0].axes[0] > 0.49f && results[0].axes[0] < 0.51f);
+  assert(results[0].axes[1] > -0.51f && results[0].axes[1] < -0.49f);
+  assert(results[0].buttons[0] == 1);
+  assert(results[0].buttons[1] == 0);
+  assert(results[0].buttons[2] == 1);
+  assert(results[0].buttons[3] == 0);
+  assert(core.frameCount() == 1);
+
+  printf("PASS\n");
+}
+
+static void test_parse_multiple_frames() {
+  printf("[TEST] test_parse_multiple_frames ... ");
+  JoyBridgeCore core;
+
+  // 构造两帧数据，拼在一起发送
+  float axes1[] = {0.0f, 0.0f};
+  uint8_t btns1[] = {1};
+  std::vector<uint8_t> f1;
+  buildJoyFrame(axes1, 2, btns1, 1, f1);
+
+  float axes2[] = {1.0f, -1.0f};
+  uint8_t btns2[] = {0, 1};
+  std::vector<uint8_t> f2;
+  buildJoyFrame(axes2, 2, btns2, 2, f2);
+
+  // 合并发送
+  std::vector<uint8_t> combined = f1;
+  combined.insert(combined.end(), f2.begin(), f2.end());
+
+  auto results = core.feedData(combined.data(), combined.size());
+
+  assert(results.size() == 2);
+  assert(results[0].axes.size() == 2);
+  assert(results[1].axes.size() == 2);
+  assert(results[0].buttons.size() == 1);
+  assert(results[1].buttons.size() == 2);
+  assert(core.frameCount() == 2);
+
+  printf("PASS\n");
+}
+
+static void test_reject_bad_crc() {
+  printf("[TEST] test_reject_bad_crc ... ");
+  JoyBridgeCore core;
+
+  float axes[] = {0.0f};
+  uint8_t btns[] = {1};
+  std::vector<uint8_t> frame;
+  buildJoyFrame(axes, 1, btns, 1, frame);
+
+  // 篡改 CRC 字节
+  frame.back() ^= 0xFF;
+
+  auto results = core.feedData(frame.data(), frame.size());
+  assert(results.empty());
+  assert(core.frameCount() == 0);
+
+  printf("PASS\n");
+}
+
+static void test_reject_too_many_axes() {
+  printf("[TEST] test_reject_too_many_axes ... ");
+  JoyBridgeCore core;
+
+  // num_axes=0 或 >16 应被拒绝
+  uint8_t bad_frame[] = {0xAA, 0x55, 0x00, 0x00, 0x00, 0x00};
+  // CRC 不重要，num_axes=0 会在 CRC 校验前被拒绝
+  auto results = core.feedData(bad_frame, sizeof(bad_frame));
+  assert(results.empty());
+
+  // 恢复后可继续接收正常帧
+  core.reset();
+
+  float axes[] = {0.0f};
+  uint8_t btns[] = {1};
+  std::vector<uint8_t> good;
+  buildJoyFrame(axes, 1, btns, 1, good);
+  results = core.feedData(good.data(), good.size());
+  assert(results.size() == 1);
+
+  printf("PASS\n");
+}
+
+static void test_partial_data_accumulates() {
+  printf("[TEST] test_partial_data_accumulates ... ");
+  JoyBridgeCore core;
+
+  float axes[] = {0.0f};
+  uint8_t btns[] = {1};
+  std::vector<uint8_t> frame;
+  buildJoyFrame(axes, 1, btns, 1, frame);
+
+  // 分两次发送：先发一半，再发另一半
+  size_t half = frame.size() / 2;
+  auto r1 = core.feedData(frame.data(), half);
+  assert(r1.empty());  // 数据不足，还不能解析
+
+  auto r2 = core.feedData(frame.data() + half, frame.size() - half);
+  assert(r2.size() == 1);  // 第二次数据补齐后成功解析
+
+  printf("PASS\n");
+}
+
+static void test_garbage_prefix_skipped() {
+  printf("[TEST] test_garbage_prefix_skipped ... ");
+  JoyBridgeCore core;
+
+  // 在合法帧前面加垃圾字节
+  float axes[] = {0.5f};
+  uint8_t btns[] = {0};
+  std::vector<uint8_t> frame;
+  buildJoyFrame(axes, 1, btns, 1, frame);
+
+  std::vector<uint8_t> noisy;
+  noisy.push_back(0xFF);
+  noisy.push_back(0x00);
+  noisy.insert(noisy.end(), frame.begin(), frame.end());
+
+  auto results = core.feedData(noisy.data(), noisy.size());
+  assert(results.size() == 1);
+  assert(results[0].axes.size() == 1);
+  assert(results[0].axes[0] > 0.49f);
+
+  printf("PASS\n");
+}
+
+static void test_reset_clears_state() {
+  printf("[TEST] test_reset_clears_state ... ");
+  JoyBridgeCore core;
+
+  float axes[] = {0.0f};
+  uint8_t btns[] = {1};
+  std::vector<uint8_t> frame;
+  buildJoyFrame(axes, 1, btns, 1, frame);
+
+  core.feedData(frame.data(), frame.size());
+  assert(core.frameCount() == 1);
+
+  core.reset();
+  assert(core.frameCount() == 0);
+
+  // 重置后仍可正常解析
+  auto results = core.feedData(frame.data(), frame.size());
+  assert(results.size() == 1);
+  assert(core.frameCount() == 1);
+
+  printf("PASS\n");
+}
+
+int main() {
+  printf("===== JoyBridgeCore Unit Tests =====\n\n");
+
+  test_parse_valid_frame();
+  test_parse_multiple_frames();
+  test_reject_bad_crc();
+  test_reject_too_many_axes();
+  test_partial_data_accumulates();
+  test_garbage_prefix_skipped();
+  test_reset_clears_state();
+
+  printf("\n===== All %s tests PASSED =====\n", "JoyBridgeCore");
+  return 0;
+}
+=== ./decoupRos2Description.md ===
+目标：
+
+将当前 ROS2 模块重构为「Core + ROS Adapter」两层架构。
+
+架构原则：
+
+1. Core 层
+
+* 不允许依赖 ROS2。
+* 不允许包含：
+
+  * rclcpp
+  * std_msgs
+  * sensor_msgs
+  * geometry_msgs
+  * nav_msgs
+  * tf2
+  * rosidl
+* Core 只负责业务逻辑。
+* Core 可以使用：
+
+  * STL
+  * Boost
+  * OpenCV
+  * FFmpeg
+  * yaml-cpp
+  * protobuf
+  * 自定义结构体
+* Core 对外暴露普通 C++ 接口。
+* Core 不直接创建线程、Timer、ROS Publisher、ROS Subscriber。
+* Core 不读取 ROS 参数。
+* Core 不发布 ROS 消息。
+
+2. ROS Adapter 层
+
+* 继承 rclcpp::Node。
+* 负责：
+
+  * 参数读取
+  * Topic订阅
+  * Topic发布
+  * Service
+  * Action
+  * Timer
+  * 生命周期管理
+* ROS Adapter 持有 Core 对象。
+* ROS消息进入后转换为 Core 数据结构。
+* Core 输出结果转换为 ROS 消息发布。
+
+目录结构：
+
+include/module_manager_hub/
+
+```
+common/
+core/
+ros/
+```
+
+src/
+
+```
+common/
+core/
+ros/
+```
+
+重构要求：
+
+1. 保持现有功能完全一致。
+2. 不修改 Topic 名称。
+3. 不修改 Message/Srv 定义。
+4. 不修改 Launch 文件行为。
+5. 不修改配置文件格式。
+6. 不修改外部接口。
+
+输出内容：
+
+1. 给出新的目录结构。
+2. 给出需要新增的 Core 类。
+3. 给出需要保留的 ROS Node 类。
+4. 给出每个类的职责划分。
+5. 给出关键代码修改点。
+6. 给出 CMakeLists 修改方案。
+7. 给出迁移步骤。
+8. 优先最小改动重构，不要过度设计。
+=== ./msg/ModuleStatus.msg ===
+string name
+bool online
+bool running
+float64 last_heartbeat
+string state_msg=== ./msg/Robotarmcontrol.msg ===
+# 机械臂控制消息
+uint32[] motor_ids
+float32[] target_positions
+float32[] target_velocitie
+=== ./msg/Robotarmstatus.msg ===
+# 机械臂状态消息
+uint32[] motor_ids
+float32[] actual_positions
+float32[] actual_velocities
+=== ./plugin/handshake_server.py ===
+"""
+握手交互 WebSocket 服务端
+监听 9999 端口处理握手指令
+
+客户端发送 JSON:
+  {"cmd": "auto"}     # 自动感知模式
+  {"cmd": "on"}       # 强制握手开启
+  {"cmd": "off"}      # 强制握手关闭
+
+服务端回复 JSON:
+  {"event": "ack"}              # 确认收到指令
+  {"event": "completed"}        # 执行完成
+  {"event": "error", "msg": "..."}
+"""
+import asyncio
+import json
+import websockets
+
+
+async def handle_client(websocket):
+    print(f"[HS] 客户端已连接: {websocket.remote_address}")
+
+    try:
+        async for raw in websocket:
+            try:
+                msg = json.loads(raw)
+                cmd = msg.get("cmd", "")
+
+                if cmd in ("auto", "on", "off"):
+                    print(f"[HS] 指令: {cmd}")
+                    await websocket.send(json.dumps({"event": "ack"}))
+
+                    # === 在这里执行握手逻辑 ===
+                    # ...
+
+                    await asyncio.sleep(0.3)
+                    await websocket.send(json.dumps({"event": "completed"}))
+
+                else:
+                    await websocket.send(json.dumps({
+                        "event": "error", "msg": f"未知指令: {cmd}"
+                    }))
+
+            except json.JSONDecodeError:
+                await websocket.send(json.dumps({
+                    "event": "error", "msg": "无效 JSON"
+                }))
+
+    except websockets.ConnectionClosed:
+        print(f"[HS] 客户端断开: {websocket.remote_address}")
+    except Exception as e:
+        print(f"[HS] 错误: {e}")
+
+
+async def main():
+    host = "0.0.0.0"
+    port = 9999
+    print(f"[HS] 握手服务启动: ws://{host}:{port}/handshake")
+
+    async with websockets.serve(
+        handle_client, host, port,
+        ping_interval=10, ping_timeout=5,
+    ):
+        await asyncio.Future()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
+=== ./plugin/action_group_server.py ===
+"""
+动作组 WebSocket 服务端
+点对点连接，监听 WebSocket 9998 端口处理动作指令
+
+客户端发送 JSON:
+  {"cmd": "play", "para": 3}   # 播放语音段落 3
+  {"cmd": "play"}              # 播放整组
+  {"cmd": "reset"}             # 归位
+
+服务端回复 JSON:
+  {"event": "ack"}                     # 确认收到指令
+  {"event": "completed"}               # 播放完成
+  {"event": "error", "msg": "..."}     # 错误
+"""
+import asyncio
+import json
+import websockets
+
+# ========== 在这里实现你的实际动作执行逻辑 ==========
+# async def execute_play(para: int = 0):
+#     """播放语音动作组，para=0播放整组"""
+#     ...
+#
+# async def execute_reset():
+#     """动作归位"""
+#     ...
+
+
+async def handle_client(websocket):
+    """处理单个 WebSocket 客户端"""
+    print(f"[WS] 客户端已连接: {websocket.remote_address}")
+
+    try:
+        async for raw in websocket:
+            try:
+                msg = json.loads(raw)
+                cmd = msg.get("cmd", "")
+
+                if cmd == "play":
+                    para = msg.get("para", 0)
+                    print(f"[WS] 指令: play para={para}")
+
+                    # 回复 ACK
+                    await websocket.send(json.dumps({"event": "ack"}))
+
+                    # === 在这里执行播放逻辑 ===
+                    # await execute_play(para)
+
+                    await asyncio.sleep(1.0)       # 模拟耗时
+                    await websocket.send(json.dumps({"event": "completed"}))
+
+                elif cmd == "reset":
+                    print("[WS] 指令: reset")
+                    await websocket.send(json.dumps({"event": "ack"}))
+
+                    # === 在这里执行归位逻辑 ===
+                    # await execute_reset()
+
+                    await asyncio.sleep(0.5)
+                    await websocket.send(json.dumps({"event": "completed"}))
+
+                else:
+                    await websocket.send(json.dumps({
+                        "event": "error", "msg": f"未知指令: {cmd}"
+                    }))
+
+            except json.JSONDecodeError:
+                await websocket.send(json.dumps({
+                    "event": "error", "msg": "无效 JSON"
+                }))
+
+    except websockets.ConnectionClosed:
+        print(f"[WS] 客户端断开: {websocket.remote_address}")
+    except Exception as e:
+        print(f"[WS] 错误: {e}")
+
+
+async def main():
+    host = "0.0.0.0"
+    ws_port = 9998
+    print(f"[WS] 动作组服务启动: ws://{host}:{ws_port}/action")
+
+    async with websockets.serve(
+        handle_client, host, ws_port,
+        ping_interval=10, ping_timeout=5,
+    ):
+        await asyncio.Future()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
+=== ./plugin/remote_control_client.py ===
+import json
+import pygame
+import sys
+import time
+import serial
+import socket
+import threading
+import numpy as np
+import io
+from enum import Enum
+import websockets.sync.client
+
+# ====================== 基础配置 ======================
+LINEAR_SPEED_MAX = 0.6   # 运控节点线速度上限 (m/s)
+ANGULAR_SPEED_MAX = 1.0  # 运控节点角速度上限 (rad/s)
+CMD_SEND_RATE = 7       # 运动指令发送频率(Hz)
+
+# 相机推流配置
+CAMERA_IP = "192.168.9.253"   # 机端IP地址
+CAMERA_PORT = 8888             # TCP 推流端口
+
+# 串口配置（与 C++ 模块管理器一致）
+# Windows 下 CH340 通常是 COM3，改为: SERIAL_PORT = "COM3"
+# Linux  下 CH340 通常是 /dev/ttyUSB0 或 /dev/ttyCH340USB0
+SERIAL_PORT = "/dev/ttyUSB0"
+SERIAL_BAUD = 115200
+
+# 二进制协议常量（32 字节固定帧，与 C++ 端保持一致）
+SERIAL_SOF0 = 0xAA
+SERIAL_SOF1 = 0x55
+SERIAL_HEADER_LEN = 4   # SOF0 + SOF1 + CmdType + PayLen
+SERIAL_DATA_LEN = 16    # 数据域固定 16 字节
+SERIAL_RESERVED = 10    # 保留 10 字节
+SERIAL_CRC_LEN = 2      # CRC16 2 字节
+SERIAL_FRAME_LEN = SERIAL_HEADER_LEN + SERIAL_DATA_LEN + SERIAL_RESERVED + SERIAL_CRC_LEN  # = 32
+
+# 指令类型
+CMD_MOVE = 0x01      # 速度指令
+CMD_TASK = 0x02      # 任务指令
+CMD_HEARTBEAT = 0x03 # 心跳包
+CMD_STATUS = 0x04    # 状态反馈
+
+# ====================== 通信状态 + 模块ID映射 ======================
+# 模块ID与C++端 bit 位一一对应
+MODULE_IDS = ["lower_body", "upper_body", "imu_driver", "remote_interface", "usb_camera"]
+
+# ====================== 指令类型枚举 ======================
+class CmdType(Enum):
+    MOVE = 1    # 0x01 运动控制: payload = linear_f32 + angular_f32
+    TASK = 2    # 0x02 预设任务: payload = task_id_u8
+    STOP = 3    # 0x03 紧急停止（与机端心跳复用同一数值，但由控制端主动发送）
+
+# ====================== WebSocket 动作组协议 ======================
+# 通过 WebSocket 向局域网内的动作组服务发送 play/reset 指令
+# 协议为 JSON，支持双向通信：发指令、收 ACK + 事件推送
+WS_ACTION_URI = "ws://192.168.9.253:9998/action"  # 动作组 WebSocket 服务
+WS_CONNECT_TIMEOUT = 3.0   # 连接超时 (秒)
+WS_CMD_TIMEOUT = 3.0       # 指令等待 ACK 超时 (秒)
+
+class ActionCmdType(Enum):
+    """WebSocket 动作指令类型"""
+    PLAY = "play"   # 播放动作组
+    RESET = "reset" # 动作归位
+
+# ====================== WebSocket 握手协议 ======================
+WS_HANDSHAKE_URI = "ws://192.168.9.253:9999/handshake"
+
+class HandshakeCmdType(Enum):
+    """握手交互指令"""
+    AUTO = "auto"       # 自动感知模式
+    FORCE_ON = "on"     # 强制握手开启
+    FORCE_OFF = "off"   # 强制握手关闭
+
+# ====================== 10个预设任务定义 ======================
+TASK_LIST = {
+    1: "语音动作组",
+    2: "握手交互",
+    3: "语音交互",
+    4: "待机模式",
+    5: "手指动作能力展示",
+    6: "挥手动作",
+    7: "表情头能力展示",
+    8: "回到待机模式",
+    9: "预留任务9",
+    10: "预留任务10"
+}
+
+# 颜色（保留基本颜色供其他模块使用）
+BLACK = (0, 0, 0)
+WHITE = (255, 255, 255)
+GREEN = (0, 255, 0)
+RED = (255, 0, 0)
+# ======================================================
+
+# ====================== 跨平台中文字体查找 ======================
+# Linux 上 pygame.font.match_font() 对中文字体名经常返回 None，
+# 即使字体已安装。Windows 则直接使用 SysFont("microsoftyahei") 即可。
+# 以下根据平台分流：
+#   Windows → SysFont("microsoftyahei" / "simhei")
+#   Linux   → 多级查找：fc-list → 常见路径硬编码 → match_font → SysFont
+
+import subprocess
+import os
+
+_IS_WINDOWS = sys.platform == "win32" or sys.platform == "cygwin"
+
+# ====================== 平台适配 ======================
+# Linux 下手柄轴值范围可能跟 Windows 不同，需要做映射。
+# Linux: A0/A2 中心 -0.5 (范围 -1~0), A1/A3 中心 +0.5 (范围 0~1)
+# 设 True 启用 Linux 轴映射，False 用原始值（Windows 默认）
+USE_LINUX_AXIS_MAP = False
+
+# ---------- Windows：直接用 SysFont ----------
+_WIN_CN_FONT_NAME = "microsoftyahei"
+_WIN_CN_MONO_NAME = "microsoftyahei"
+
+
+def _load_font_windows(size, bold=False, mono=False):
+    """Windows 上用 SysFont 直接指定中文字体名，效果可靠"""
+    name = _WIN_CN_MONO_NAME if mono else _WIN_CN_FONT_NAME
+    font = pygame.font.SysFont(name, size, bold=bold)
+    # 验证字体是否真的包含中文（随便渲染一个中文字看宽高是否正常）
+    test_surf = font.render("中", True, (0, 0, 0))
+    if test_surf.get_width() > 4:
+        return font
+    # 万一没找到，用 None（pygame 默认字体），但概率极低
+    return pygame.font.SysFont(None, size, bold=bold)
+
+
+# ---------- Linux：多级查找策略 ----------
+# 常见 Linux 中文字体文件路径（按优先级排列）
+_LINUX_CN_FONT_PATHS = [
+    # Noto Sans CJK
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+    # Noto Sans CJK SC
+    "/usr/share/fonts/opentype/noto/NotoSansCJKsc-Regular.otf",
+    "/usr/share/fonts/truetype/noto/NotoSansCJKsc-Regular.ttf",
+    # WQY
+    "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+    "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+    "/usr/share/fonts/wqy-microhei/wqy-microhei.ttc",
+    # Source Han Sans
+    "/usr/share/fonts/opentype/source-han-sans-sc/SourceHanSansSC-Regular.otf",
+    "/usr/share/fonts/truetype/source-han-sans-sc/SourceHanSansSC-Regular.ttf",
+    # Droid Sans Fallback
+    "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
+]
+
+_LINUX_CN_MONO_PATHS = [
+    # Noto Sans Mono CJK
+    "/usr/share/fonts/opentype/noto/NotoSansMonoCJKsc-Regular.otf",
+    "/usr/share/fonts/truetype/noto/NotoSansMonoCJK-Regular.ttf",
+    # WQY (等宽)
+    "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+    "/usr/share/fonts/wqy-microhei/wqy-microhei.ttc",
+]
+
+_LINUX_FONT_CANDIDATES = [
+    "notosanscjksc", "notosanscjk", "sourcehansanssc",
+    "wenquanyimicrohei", "wqyzenhei",
+    "noto sans cjk sc", "noto sans cjk",
+    "wqy-microhei", "wqy-zenhei",
+    "microsoftyahei", "simhei",
+]
+
+_LINUX_MONO_CANDIDATES = [
+    "notosansmonocjksc", "notosansmonocjk", "notosanscjksc",
+    "noto sans mono cjk sc",
+    "wenquanyimicrohei", "wqyzenhei", "wqy-zenhei", "wqy-microhei",
+]
+
+
+def _linux_find_by_fc_list(mono=False):
+    """使用 fc-list 查询系统已安装的中文字体文件路径"""
+    try:
+        result = subprocess.run(
+            ["fc-list", ":lang=zh", "-f", "%{file}\n"],
+            capture_output=True, text=True, timeout=3.0
+        )
+        if result.returncode != 0 or not result.stdout.strip():
+            return None
+        paths = [p.strip() for p in result.stdout.strip().split("\n") if p.strip()]
+        if not paths:
+            return None
+        seen = set()
+        unique = []
+        for p in paths:
+            key = os.path.basename(p)
+            if key not in seen:
+                seen.add(key)
+                unique.append(p)
+        if mono:
+            for p in unique:
+                if "mono" in os.path.basename(p).lower() and os.path.exists(p):
+                    return p
+        for p in unique:
+            if os.path.exists(p):
+                return p
+    except Exception:
+        pass
+    return None
+
+
+def _linux_find_by_common_paths(mono=False):
+    """按常见字体文件路径查找"""
+    paths = _LINUX_CN_MONO_PATHS if mono else _LINUX_CN_FONT_PATHS
+    for p in paths:
+        if os.path.exists(p):
+            return p
+    return None
+
+
+def _linux_find_by_match_font(mono=False, bold=False):
+    """按字体名使用 pygame.match_font 查找"""
+    candidates = _LINUX_MONO_CANDIDATES if mono else _LINUX_FONT_CANDIDATES
+    for name in candidates:
+        font_path = pygame.font.match_font(name, bold=bold)
+        if font_path and os.path.exists(font_path):
+            return font_path
+    return None
+
+
+def _load_font_linux(size, bold=False, mono=False):
+    """Linux 多级策略加载中文字体"""
+    font_path = _linux_find_by_fc_list(mono=mono)
+    if not font_path:
+        font_path = _linux_find_by_common_paths(mono=mono)
+    if not font_path:
+        font_path = _linux_find_by_match_font(mono=mono, bold=bold)
+    if font_path:
+        try:
+            font = pygame.font.Font(font_path, size)
+            font.set_bold(bold)
+            return font
+        except Exception:
+            pass
+    print("⚠️ 未找到中文字体，请安装 fonts-noto-cjk 或 fonts-wqy-microhei")
+    return pygame.font.SysFont(None, size, bold=bold)
+
+
+# ====================== 统一字体加载入口 ======================
+def load_ui_font(size, bold=False, mono=False):
+    """根据当前操作系统选择合适的中文字体加载方式"""
+    if _IS_WINDOWS:
+        return _load_font_windows(size, bold=bold, mono=mono)
+    return _load_font_linux(size, bold=bold, mono=mono)
+
+
+def calc_crc16(data: bytes) -> int:
+    """CRC16-Modbus 校验，与 C++ 端 calcCRC16 一致"""
+    crc = 0xFFFF
+    for b in data:
+        crc ^= b
+        for _ in range(8):
+            if crc & 0x0001:
+                crc = (crc >> 1) ^ 0xA001
+            else:
+                crc >>= 1
+    return crc
+
+def build_frame(cmd_type: int, payload: bytes = b"") -> bytes:
+    """构建 32 字节固定帧:
+       帧头(2) + CmdType(1) + PayLen(1) + 数据域(16) + 保留(10) + CRC16(2)
+    """
+    frame = bytes([SERIAL_SOF0, SERIAL_SOF1, cmd_type & 0xFF, len(payload) & 0xFF])
+
+    # 数据域 16 字节（填充 0）
+    data_field = bytearray(SERIAL_DATA_LEN)
+    copy_len = min(len(payload), SERIAL_DATA_LEN)
+    data_field[:copy_len] = payload[:copy_len]
+    frame += bytes(data_field)
+
+    # 保留 10 字节（全 0）
+    frame += bytes(SERIAL_RESERVED)
+
+    # CRC16（从 CmdType 到保留末尾）
+    crc = calc_crc16(frame[2:])  # 从 CmdType 开始算
+    frame += bytes([crc & 0xFF, (crc >> 8) & 0xFF])
+
+    assert len(frame) == SERIAL_FRAME_LEN, f"帧长度错误: {len(frame)} != {SERIAL_FRAME_LEN}"
+    return frame
+
+
+class RobotRemote:
+    def __init__(self):
+        pygame.init()
+        self.win_w = 1200
+        self.win_h = 760
+        self.screen = pygame.display.set_mode((self.win_w, self.win_h))
+        pygame.display.set_caption("三代人形机器人远程控制系统")
+
+        # 字体
+        self.font_title = load_ui_font(28, bold=True)
+        self.font_md = load_ui_font(18)
+        self.font_sm = load_ui_font(14)
+        self.font_mono = load_ui_font(12, mono=True)
+
+        # 摇杆透传配置
+        self.joystick = None
+        self.joystick_connected = False
+        self.joystick_name = ""
+        self.joystick_num_axes = 0
+        self.joystick_num_buttons = 0
+        self.joystick_num_hats = 0
+        self.last_tip = "等待操作"
+        self.last_joystick_send_time = 0
+
+        # 相机画面（C键播放/停止，画面常驻）
+        self.camera_playing = False     # 是否正在播放
+        self.camera_active = False      # 线程是否运行中
+        self.camera_frame = None
+        self.camera_thread = None
+        self.camera_running = False
+        self.camera_frame_lock = threading.Lock()  # 保护 camera_frame
+        self.camera_last_frame_time = 0  # 上次收到新帧的时间戳
+        self.camera_frame_count = 0      # 收到的总帧数
+        self.camera_fps_log_time = 0     # 上次fps日志时间
+        self.camera_fps_frame_count = 0  # fps统计帧数
+
+        # ========== 界面布局 ==========
+        # 主任务配置
+        self.main_tasks = [
+            {"id": 1, "name": "1. 语音动作组", "subs": [f"语音段落 {i}" for i in range(1, 31)]},
+            {"id": 2, "name": "2. 握手交互",   "subs": ["自动感知模式", "强制握手开启", "强制握手关闭"]},
+            {"id": 3, "name": "3. 语音交互",   "subs": ["语音问答交互模式"]},
+            {"id": 4, "name": "4. 待机模式",   "subs": ["待机模式（关闭非运控节点）"]},
+        ]
+        self.current_main_task = 0  # 当前选中的主任务索引
+        self.sub_task_states = {}   # sub_id -> bool
+        for i, main in enumerate(self.main_tasks):
+            for j, _ in enumerate(main["subs"]):
+                self.sub_task_states[f"{i}-{j}"] = False
+        self.voice_scroll_offset = 0  # 语音动作组子任务滚动偏移
+
+        # 初始化摇杆
+        self._init_joystick()
+
+        # 日志
+        self.logs = []
+        self.add_log("远程控制系统已启动")
+        self.add_log("433MHz控制链路已连接")
+        self.add_log("915MHz图传链路已连接")
+        if self.joystick_connected:
+            self.add_log(f"摇杆已连接: {self.joystick_name}", "success")
+        else:
+            self.add_log("⚠️ 未检测到手柄，请连接后重启", "warning")
+
+        # ========== WebSocket 动作组（Play / Reset）==========
+        self.ws = None
+        self.ws_connected = False
+        self.ws_running = True
+        self.ws_lock = threading.Lock()
+        self.ws_ack_event = threading.Event()  # 等待 ACK 信号
+        self.action_playing = False   # 是否正在播放动作组
+        self.action_resetting = False # 是否正在归位
+        # 后台连接 + 接收线程
+        self.ws_connect_retry = True
+        threading.Thread(target=self._ws_connect_loop, daemon=True).start()
+
+        # ========== WebSocket 握手交互（AUTO / ON / OFF）==========
+        self.hs_ws = None
+        self.hs_connected = False
+        self.hs_running = True
+        self.hs_lock = threading.Lock()
+        self.hs_ack_event = threading.Event()
+        threading.Thread(target=self._hs_connect_loop, daemon=True).start()
+
+        # 串口初始化
+        try:
+            self.ser = serial.Serial(
+                port=SERIAL_PORT,
+                baudrate=SERIAL_BAUD,
+                bytesize=serial.EIGHTBITS,
+                parity=serial.PARITY_NONE,
+                stopbits=serial.STOPBITS_ONE,
+                timeout=0.1
+            )
+            print(f"✅ 串口已打开: {SERIAL_PORT} @ {SERIAL_BAUD} baud")
+        except Exception as e:
+            print(f"❌ 串口打开失败: {e}")
+            print(f"   请检查 CH340 设备是否已连接，路径是否为 {SERIAL_PORT}")
+            self.ser = None
+
+        self.module_statuses = {m: False for m in MODULE_IDS}
+        self.dtu_connected = self.ser is not None
+        self.lan_connected = False
+        if self.ser:
+            threading.Thread(target=self.serial_rx_loop, daemon=True).start()
+        threading.Thread(target=self.lan_check_loop, daemon=True).start()
+
+        print(f"✅ 运动指令发送频率: {CMD_SEND_RATE}Hz")
+
+        # 串口仅用于摇杆透传，不再发送协议帧
+
+    # -------------------------- 日志 --------------------------
+    def add_log(self, message, level="info"):
+        ts = time.strftime("%H:%M:%S")
+        self.logs.append((ts, message, level))
+        if len(self.logs) > 100:
+            self.logs.pop(0)
+
+    # -------------------------- LAN 链路探测 (SSH 22) --------------------------
+    def lan_check_loop(self):
+        """每3秒尝试TCP连接SSH端口判断局域网通断"""
+        while True:
+            try:
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s.settimeout(2.0)
+                s.connect((CAMERA_IP, 22))
+                s.close()
+                self.lan_connected = True
+            except Exception:
+                self.lan_connected = False
+            time.sleep(3.0)
+
+    # -------------------------- 串口接收（解析C++回发的状态） --------------------------
+    def serial_rx_loop(self):
+        rx_count = 0
+        last_rx = time.time()
+        rx_buf = b""
+        while self.ser and self.ser.is_open:
+            try:
+                # 读取原始数据
+                chunk = self.ser.read(SERIAL_FRAME_LEN)
+                if not chunk:
+                    # 超时检测
+                    if last_rx > 0 and time.time() - last_rx > 2.5:
+                        print("[TIMEOUT] C++ 心跳超时，标记离线")
+                        self.dtu_connected = False
+                        for name in self.module_statuses:4
+                        last_rx = 0
+                    continue
+
+                rx_buf += chunk
+
+                # 尝试从缓存中解析帧（32 字节固定帧长）
+                while len(rx_buf) >= SERIAL_FRAME_LEN:
+                    # 找帧头 0xAA 0x55
+                    sof_idx = rx_buf.find(bytes([SERIAL_SOF0, SERIAL_SOF1]))
+                    if sof_idx < 0:
+                        rx_buf = b""
+                        break
+
+                    if sof_idx > 0:
+                        rx_buf = rx_buf[sof_idx:]
+                        continue
+
+                    if len(rx_buf) < SERIAL_FRAME_LEN:
+                        break
+
+                    frame = rx_buf[:SERIAL_FRAME_LEN]
+
+                    # CRC16 校验（从 CmdType 到保留末尾）
+                    recv_crc = frame[-2] | (frame[-1] << 8)
+                    calc_crc = calc_crc16(frame[2:-2])  # 从 CmdType 到保留末尾
+                    if recv_crc != calc_crc:
+                        print("[CRC] CRC16 校验错误，丢弃")
+                        rx_buf = rx_buf[1:]
+                        continue
+
+                    cmd_type = frame[2]
+                    pay_len = frame[3]
+                    data = frame[SERIAL_HEADER_LEN:SERIAL_HEADER_LEN + pay_len]
+
+                    # 任何有效帧都刷新心跳计时
+                    self.dtu_connected = True
+                    last_rx = time.time()
+
+                    if cmd_type == CMD_STATUS and len(data) >= 2:
+                        mask = (data[0] << 8) | data[1]
+                        for i, name in enumerate(MODULE_IDS):
+                            self.module_statuses[name] = bool(mask & (1 << i))
+                        rx_count += 1
+                        if rx_count % 10 == 0:
+                            pass
+
+                    rx_buf = rx_buf[SERIAL_FRAME_LEN:]
+
+            except serial.SerialException:
+                self.dtu_connected = False; time.sleep(0.5)
+            except Exception:
+                pass
+        self.dtu_connected = False
+
+    def _init_joystick(self):
+        """初始化游戏手柄"""
+        count = pygame.joystick.get_count()
+        print("检测到手柄数量：", count)
+        if count == 0:
+            print("未找到手柄，仅保留键盘/鼠标操作")
+            return
+
+        try:
+            js = pygame.joystick.Joystick(0)
+            js.init()
+            self.joystick = js
+            self.joystick_connected = True
+            self.joystick_name = js.get_name()
+            self.joystick_num_axes = js.get_numaxes()
+            self.joystick_num_buttons = js.get_numbuttons()
+            self.joystick_num_hats = js.get_numhats()
+            print(f"\n=== 手柄 0 ===")
+            print(f"名称: {self.joystick_name}")
+            print(f"轴数: {self.joystick_num_axes}")
+            print(f"按钮数: {self.joystick_num_buttons}")
+            print(f"帽子数: {self.joystick_num_hats}")
+        except Exception as e:
+            print(f"手柄初始化失败: {e}")
+
+    # -------------------------- 指令封装（二进制协议）--------------------------
+    def send_frame(self, frame: bytes):
+        """通过串口发送二进制帧"""
+        if self.ser is None:
+            return
+        try:
+            self.ser.write(frame)
+        except Exception as e:
+            print(f"❌ 串口发送失败: {e}")
+
+    def _read_joystick_raw(self) -> bytes:
+        """读取摇杆当前所有轴、按钮原始值，序列化为精简二进制格式
+
+        格式：
+          [0xAA 0x55 帧头:2B][轴数:1B][轴0~N: int16小端 × N]
+          [按钮数:1B][按钮0~M: uint8 × M][CRC16:2B 小端]
+        """
+        if not self.joystick_connected or self.joystick is None:
+            return b""
+
+        pygame.event.pump()  # 刷新手柄状态
+        import struct
+        buf = bytearray()
+
+        # 帧头（2字节，避免轴数据中的 0xAA 误同步）
+        buf.extend([0xAA, 0x55])
+
+        # 轴数据
+        num_axes = self.joystick_num_axes
+        buf.append(num_axes & 0xFF)
+        for idx in range(num_axes):
+            raw = self.joystick.get_axis(idx)
+
+            # Linux 轴映射：-0.5→0.5 对应 -1~1 范围
+            # 中心值映射到 0，半范围 0.5 映射到 ±1.0
+            if USE_LINUX_AXIS_MAP:
+                # A0/A2: 中心 -0.5, 范围 -1.0~0.0 (半范围 0.5)
+                # A1/A3: 中心 +0.5, 范围  0.0~1.0 (半范围 0.5)
+                center = -0.5 if idx % 2 == 0 else 0.5
+                norm = -((raw - center) / 0.5)  # 取反
+            else:
+                norm = -raw
+
+            norm = max(-1.0, min(1.0, norm))
+            val = int(norm * 32767)
+            val = max(-32767, min(32767, val))
+            buf.extend(struct.pack('<h', val))
+
+        # 按钮数据
+        num_btns = self.joystick_num_buttons
+        buf.append(num_btns & 0xFF)
+        for idx in range(num_btns):
+            buf.append(self.joystick.get_button(idx))
+
+        # CRC16（校验范围：SOF之后的所有数据）
+        crc = calc_crc16(bytes(buf[2:]))
+        buf.extend(struct.pack('<H', crc))
+
+        return bytes(buf)
+
+    def send_task_cmd(self, task_num):
+        """发送预设任务指令：
+           帧: 0xAA | 0x02 | 0x01 | task_id_u8 | checksum
+        """
+        payload = bytes([task_num & 0xFF])
+        frame = build_frame(CmdType.TASK.value, payload)
+        self.send_frame(frame)
+
+    # -------------------------- 相机画面 --------------------------
+    def toggle_camera_play(self):
+        """C键切换播放/停止（画面常驻，C键只控制数据流）"""
+        if self.camera_playing:
+            self.stop_camera()
+        else:
+            self.start_camera()
+
+    def start_camera(self):
+        """启动相机接收线程"""
+        self.camera_playing = True
+        self.camera_active = True
+        self.camera_running = True
+        self.last_tip = "相机播放中..."
+        self.camera_thread = threading.Thread(target=self.camera_loop, daemon=True)
+        self.camera_thread.start()
+
+    def stop_camera(self):
+        """停止相机接收（保留最后一帧画面）"""
+        self.camera_running = False
+        self.camera_active = False
+        self.camera_playing = False
+        self.last_tip = "相机已暂停"
+
+    def camera_loop(self):
+        """相机接收线程：TCP → H.264 → pygame 解码（带自动重连）"""
+        while self.camera_running and self.camera_playing:
+            sock = None
+            try:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(2.0)  # 2 秒超时，更快检测断开
+                sock.connect((CAMERA_IP, CAMERA_PORT))
+                self.last_tip = "相机已连接"
+                self.add_log("TCP 相机已连接", "success")
+                print("✅ TCP 相机已连接")
+
+                # 用 Python 的 av 库来解码
+                try:
+                    import av
+                    codec = av.CodecContext.create('h264', 'r')
+                except ImportError:
+                    self.add_log("需要安装 av 库: pip install av", "error")
+                    print("⚠ 需要安装 av 库: pip install av")
+                    raise
+
+                while self.camera_running and self.camera_playing:
+                    # 读4字节数据长度
+                    try:
+                        len_data = sock.recv(4)
+                    except socket.timeout:
+                        self.add_log("相机接收超时，主动断开重连", "warning")
+                        break
+                    if not len_data:
+                        print("[CAM] recv(4) returned empty, connection closed")
+                        break
+                    length = int.from_bytes(len_data, 'big')
+                    if length > 500000:
+                        print(f"[CAM] length too large: {length}, 帧边界错位，断开重连")
+                        break
+
+                    # 读完整 H.264 数据
+                    data = b''
+                    while len(data) < length:
+                        packet = sock.recv(length - len(data))
+                        if not packet:
+                            print(f"[CAM] recv payload failed at {len(data)}/{length}")
+                            break
+                        data += packet
+
+                    if len(data) != length:
+                        print(f"[CAM] payload incomplete: got {len(data)}/{length}")
+                        break
+
+                    # 用 PyAV 解码 H.264 ES
+                    frame_received = False
+                    try:
+                        frames = codec.decode(av.Packet(data))
+                        for frame in frames:
+                            frame_received = True
+                            img = frame.to_ndarray(format='bgr24')
+                            raw = pygame.image.frombuffer(img.tobytes(), (img.shape[1], img.shape[0]), "BGR")
+                            with self.camera_frame_lock:
+                                self.camera_frame = raw
+                            # 每帧耗时统计
+                            now = time.time()
+                            frame_interval = now - self.camera_last_frame_time if self.camera_last_frame_time > 0 else 0
+                            self.camera_last_frame_time = now
+                            self.camera_frame_count += 1
+                            self.camera_fps_frame_count += 1
+                            # 记录最大帧间隔
+                            if not hasattr(self, 'camera_max_interval'):
+                                self.camera_max_interval = 0
+                                self.camera_interval_log_time = now
+                                self.camera_interval_frame_count = 0
+                            if frame_interval > self.camera_max_interval:
+                                self.camera_max_interval = frame_interval
+                            self.camera_interval_frame_count += 1
+                            if self.camera_interval_frame_count >= 300:
+                                print(f"[CAM] 最近300帧: 最大帧间隔={self.camera_max_interval*1000:.0f}ms")
+                                self.camera_max_interval = 0
+                                self.camera_interval_frame_count = 0
+                                self.camera_interval_log_time = now
+                            if now - self.camera_fps_log_time >= 10.0:
+                                actual_fps = self.camera_fps_frame_count / (now - self.camera_fps_log_time)
+                                print(f"[CAM] 实际接收帧率: {actual_fps:.1f} fps, 总帧数: {self.camera_frame_count}")
+                                self.camera_fps_log_time = now
+                                self.camera_fps_frame_count = 0
+                    except Exception as e:
+                        print(f"[CAM] decode error: {e}")
+                        pass
+
+                    if not frame_received:
+                        # 连续收不到帧说明解码器卡死了，主动断开让外层重连
+                        print(f"[CAM] no frame decoded from {length} bytes, 解码器可能卡死，断开重连")
+                        break
+                    else:
+                        pass  # 正常收到帧
+
+            except socket.timeout:
+                self.last_tip = "相机连接超时"
+                print("❌ 相机连接超时")
+            except ConnectionRefusedError:
+                self.last_tip = "相机服务未启动"
+                print("❌ 相机服务未启动")
+            except (OSError, BrokenPipeError) as e:
+                self.last_tip = f"相机断开: {str(e)[:20]}"
+                print(f"❌ 相机断开: {e}")
+            except Exception as e:
+                self.last_tip = f"相机错误: {str(e)[:30]}"
+                print(f"❌ 相机错误: {e}")
+            finally:
+                if sock:
+                    try:
+                        sock.close()
+                    except:
+                        pass
+
+            # 立即重连，不等待
+            if self.camera_running and self.camera_playing:
+                print("📷 相机断开，立即重连...")
+                # 不等待，直接进入外层循环重试
+            else:
+                break
+
+    def send_stop_cmd(self):
+        """发送紧急停止指令：
+           帧: 0xAA | 0x03 | 0x00 | checksum
+        """
+        frame = build_frame(CmdType.STOP.value)
+        self.send_frame(frame)
+
+    # -------------------------- WebSocket 连接 & 接收 ----------
+    def _ws_connect_loop(self):
+        """后台线程：保持 WebSocket 连接，断线自动重连，收取服务端推送"""
+        while self.ws_running:
+            try:
+                with self.ws_lock:
+                    if self.ws:
+                        try:
+                            self.ws.close()
+                        except:
+                            pass
+                        self.ws = None
+                    self.ws_connected = False
+
+                ws = websockets.sync.client.connect(
+                    WS_ACTION_URI, timeout=WS_CONNECT_TIMEOUT)
+                print(f"✅ WebSocket 已连接: {WS_ACTION_URI}")
+
+                with self.ws_lock:
+                    self.ws = ws
+                    self.ws_connected = True
+
+                # 接收循环
+                while self.ws_running:
+                    try:
+                        raw = ws.recv()
+                        if raw is None:
+                            break
+                        msg = json.loads(raw)
+                        event = msg.get("event", "")
+                        # ACK 响应（播放/重置指令确认）
+                        if event == "ack":
+                            self.ws_ack_event.set()
+                        # 播放完成通知
+                        elif event == "completed":
+                            self.action_playing = False
+                            self.add_log("动作组播放完成", "success")
+                            print("[WS] 动作组播放完成")
+                        # 错误通知
+                        elif event == "error":
+                            self.add_log(f"动作组错误: {msg.get('msg', '')}", "error")
+                            print(f"[WS] 动作组错误: {msg}")
+                    except json.JSONDecodeError:
+                        continue
+                    except (websockets.ConnectionClosed, OSError):
+                        break
+
+            except (websockets.InvalidURI, websockets.InvalidHandshake,
+                    OSError, TimeoutError) as e:
+                if self.ws_running:
+                    print(f"⚠️ WebSocket 连接失败 ({e}), 5s 后重试...")
+                    self.add_log("动作组服务未连接，等待重试...", "warning")
+
+            except Exception as e:
+                print(f"❌ WebSocket 异常: {e}")
+
+            with self.ws_lock:
+                self.ws_connected = False
+                self.ws = None
+
+            if self.ws_running:
+                time.sleep(5.0)  # 重连间隔
+
+    # -------------------------- WebSocket 动作指令发送 ----------
+    def send_action_cmd(self, cmd_type: ActionCmdType, para: int = 0) -> bool:
+        """通过 WebSocket 发送动作指令，等待 ACK 确认。
+           para: 语音段落号（0=播放整组）
+           返回 True 表示收到服务端 ACK。
+        """
+        msg = {"cmd": cmd_type.value}
+        if cmd_type == ActionCmdType.PLAY and para > 0:
+            msg["para"] = para
+
+        with self.ws_lock:
+            if not self.ws or not self.ws_connected:
+                self.add_log(f"动作组服务未连接，无法发送 {cmd_type.value}", "warning")
+                return False
+            ws = self.ws
+
+        try:
+            self.ws_ack_event.clear()
+            ws.send(json.dumps(msg))
+            print(f"📤 WS -> {WS_ACTION_URI}  {msg}")
+
+            # 等待服务端 ACK
+            if self.ws_ack_event.wait(timeout=WS_CMD_TIMEOUT):
+                self.add_log(f"✅ 动作指令确认: {cmd_type.value}", "success")
+                return True
+            else:
+                self.add_log(f"⚠️ 动作指令超时: {cmd_type.value}", "warning")
+                return False
+
+        except (websockets.ConnectionClosed, OSError, AttributeError) as e:
+            self.add_log(f"WebSocket 发送失败: {e}", "error")
+            with self.ws_lock:
+                self.ws_connected = False
+            return False
+
+    # -------------------------- 握手 WebSocket 连接 & 接收 ----------
+    def _hs_connect_loop(self):
+        """后台线程：保持握手服务 WebSocket 连接"""
+        while self.hs_running:
+            try:
+                with self.hs_lock:
+                    if self.hs_ws:
+                        try:
+                            self.hs_ws.close()
+                        except:
+                            pass
+                        self.hs_ws = None
+                    self.hs_connected = False
+
+                ws = websockets.sync.client.connect(
+                    WS_HANDSHAKE_URI, timeout=WS_CONNECT_TIMEOUT)
+                print(f"✅ 握手 WebSocket 已连接: {WS_HANDSHAKE_URI}")
+
+                with self.hs_lock:
+                    self.hs_ws = ws
+                    self.hs_connected = True
+
+                while self.hs_running:
+                    try:
+                        raw = ws.recv()
+                        if raw is None:
+                            break
+                        msg = json.loads(raw)
+                        event = msg.get("event", "")
+                        if event == "ack":
+                            self.hs_ack_event.set()
+                        elif event == "completed":
+                            self.add_log("握手动作完成", "success")
+                            print("[HS] 握手动作完成")
+                        elif event == "error":
+                            self.add_log(f"握手错误: {msg.get('msg', '')}", "error")
+                    except json.JSONDecodeError:
+                        continue
+                    except (websockets.ConnectionClosed, OSError):
+                        break
+
+            except (websockets.InvalidURI, websockets.InvalidHandshake,
+                    OSError, TimeoutError):
+                if self.hs_running:
+                    print("⚠️ 握手 WebSocket 连接失败，5s 后重试...")
+
+            except Exception as e:
+                print(f"❌ 握手 WebSocket 异常: {e}")
+
+            with self.hs_lock:
+                self.hs_connected = False
+                self.hs_ws = None
+
+            if self.hs_running:
+                time.sleep(5.0)
+
+    # -------------------------- 握手指令发送 ----------
+    def send_handshake_cmd(self, cmd: HandshakeCmdType) -> bool:
+        """通过 WebSocket 发送握手指令，等待 ACK"""
+        msg = {"cmd": cmd.value}
+
+        with self.hs_lock:
+            if not self.hs_ws or not self.hs_connected:
+                self.add_log("握手服务未连接", "warning")
+                return False
+            ws = self.hs_ws
+
+        try:
+            self.hs_ack_event.clear()
+            ws.send(json.dumps(msg))
+            print(f"📤 HS -> {WS_HANDSHAKE_URI}  {msg}")
+
+            if self.hs_ack_event.wait(timeout=WS_CMD_TIMEOUT):
+                self.add_log(f"✅ 握手指令确认: {cmd.value}", "success")
+                return True
+            else:
+                self.add_log(f"⚠️ 握手指令超时: {cmd.value}", "warning")
+                return False
+
+        except (websockets.ConnectionClosed, OSError, AttributeError) as e:
+            self.add_log(f"握手 WebSocket 发送失败: {e}", "error")
+            with self.hs_lock:
+                self.hs_connected = False
+            return False
+
+    # -------------------------- 左侧任务面板鼠标点击 ----------
+    def _handle_task_click(self, mx, my):
+        panel_y = 72
+        panel_h = self.win_h - panel_y - 100
+        left_w = int(self.win_w * 0.23)
+        left_x = 12
+
+        # 检查是否在左侧面板范围内
+        if not (left_x <= mx <= left_x + left_w and panel_y <= my <= panel_y + panel_h):
+            return
+
+        content_y = panel_y + 42
+        main_w = int(left_w * 0.4) - 6
+        sub_w = left_w - main_w - 16
+        sub_x = left_x + 10 + main_w + 6   # 子任务列左边界
+        btn_w = (sub_w - 10) // 2           # 两按钮平分子任务列宽度
+        btn_h = 32
+        btn_gap = 10
+        voice_group_idx = 0  # "1. 语音动作组" 对应 index 0
+
+        # 主任务点击
+        main_y = content_y
+        for i, main in enumerate(self.main_tasks):
+            rect = pygame.Rect(left_x + 10, main_y, main_w, 28)
+            if rect.collidepoint(mx, my):
+                self.current_main_task = i
+                self.add_log(f"切换到主任务: {main['name']}", "info")
+                return
+            main_y += 32
+
+        # 子任务点击（含语音动作组专属按钮和 UDP 发送）
+        sub_y = content_y
+        current_main = self.main_tasks[self.current_main_task]
+        is_voice_group = (self.current_main_task == voice_group_idx)
+
+        # 语音动作组：子任务区域顶部先放 Play/Reset 按钮
+        if is_voice_group:
+            sub_y += 44  # 按钮区域高度偏移
+
+        for j, sub_name in enumerate(current_main["subs"]):
+            if is_voice_group:
+                vis_idx = j - self.voice_scroll_offset
+                if vis_idx < 0:
+                    continue
+                max_visible = (panel_h - 50 - 44) // 32
+                if vis_idx >= max_visible:
+                    continue
+                actual_row = sub_y + vis_idx * 32
+            else:
+                actual_row = sub_y + j * 32
+
+            rect = pygame.Rect(left_x + 10 + main_w + 6, actual_row, sub_w, 28)
+            if rect.collidepoint(mx, my):
+                # ---- 语音动作组子任务 → WebSocket 发送 ----
+                if is_voice_group:
+                    paragraph_num = j + 1  # 语音段落 1-30
+                    success = self.send_action_cmd(
+                        ActionCmdType.PLAY, para=paragraph_num)
+                    if success:
+                        self.action_playing = True
+                        self.action_resetting = False
+                        self.last_tip = f"语音段落 {paragraph_num}"
+                    else:
+                        self.last_tip = f"语音段落 {paragraph_num} 发送失败"
+                else:
+                    # ---- 握手交互子任务 → WebSocket 发送 ----
+                    if self.current_main_task == 1:  # "2. 握手交互"
+                        handshake_cmds = [
+                            HandshakeCmdType.AUTO,      # j=0: 自动感知模式
+                            HandshakeCmdType.FORCE_ON,  # j=1: 强制握手开启
+                            HandshakeCmdType.FORCE_OFF, # j=2: 强制握手关闭
+                        ]
+                        if j < len(handshake_cmds):
+                            success = self.send_handshake_cmd(handshake_cmds[j])
+                            if success:
+                                self.last_tip = sub_name
+                            else:
+                                self.last_tip = f"{sub_name} 发送失败"
+                    else:
+                        # ---- 其他子任务 → 保持原有点击切换逻辑 ----
+                        sid = f"{self.current_main_task}-{j}"
+                        new_state = not self.sub_task_states.get(sid, False)
+                        self.sub_task_states[sid] = new_state
+                        if new_state:
+                            self.add_log(f"已开启子任务: {sub_name}", "success")
+                        else:
+                            self.add_log(f"已关闭子任务: {sub_name}", "info")
+                return
+            sub_y += 32
+
+        # ---- 语音动作组按钮点击（在子任务区域顶部）----
+        if is_voice_group:
+            btn_y = content_y + 4
+            play_x = sub_x
+            reset_x = sub_x + btn_w + btn_gap
+
+            if pygame.Rect(play_x, btn_y, btn_w, btn_h).collidepoint(mx, my):
+                if not self.action_playing:
+                    self.action_playing = True
+                    self.action_resetting = False
+                    self.send_action_cmd(ActionCmdType.PLAY)
+                    self.add_log("▶️ 动作组播放中...", "success")
+                    self.last_tip = "动作组播放中"
+                else:
+                    self.add_log("动作组已在播放中", "info")
+                return
+
+            if pygame.Rect(reset_x, btn_y, btn_w, btn_h).collidepoint(mx, my):
+                self.action_playing = False
+                self.action_resetting = True
+                self.send_action_cmd(ActionCmdType.RESET)
+                self.add_log("⏹ 动作组已归位", "warning")
+                self.last_tip = "动作归位完成"
+                return
+
+    # -------------------------- UI 绘制 --------------------------
+    def draw_ui(self):
+        self.screen.fill((26, 32, 44))  # bg-gray-900
+
+        # ==================== 标题栏 ====================
+        title = self.font_title.render("三代人形机器人远程控制系统", True, (96, 165, 250))
+        self.screen.blit(title, (self.win_w//2 - title.get_width()//2, 10))
+        sub = self.font_sm.render("433MHz控制链路 | 915MHz图传链路", True, (156, 163, 175))
+        self.screen.blit(sub, (self.win_w//2 - sub.get_width()//2, 44))
+
+        # ==================== 三列布局 ====================
+        panel_y = 72
+        panel_h = self.win_h - panel_y - 100  # 留底部给WASD
+
+        # ---- 左侧面板：任务控制 (col-span-3) ----
+        left_w = int(self.win_w * 0.23)
+        left_x = 12
+        self._draw_panel(left_x, panel_y, left_w, panel_h, "任务指令控制", (96, 165, 250, 255))
+        self._draw_task_panel(left_x, panel_y, left_w, panel_h)
+
+        # ---- 中间面板：视频 (col-span-6) ----
+        mid_x = left_x + left_w + 10
+        mid_w = int(self.win_w * 0.5)
+        self._draw_panel(mid_x, panel_y, mid_w, panel_h, "机器人胸口摄像头", (96, 165, 250, 255))
+        self._draw_video_panel(mid_x, panel_y, mid_w, panel_h)
+
+        # ---- 右侧面板：操作日志 (col-span-3) ----
+        right_x = mid_x + mid_w + 10
+        right_w = self.win_w - right_x - 12
+        self._draw_panel(right_x, panel_y, right_w, panel_h, "操作日志", (96, 165, 250, 255))
+        self._draw_log_panel(right_x, panel_y, right_w, panel_h)
+
+        # ==================== 底部摇杆状态区 ====================
+        self._draw_joystick_panel()
+
+        pygame.display.flip()
+
+    # ---------- 辅助：画面板背景 ----------
+    def _draw_panel(self, x, y, w, h, title, color):
+        pygame.draw.rect(self.screen, (31, 41, 55), (x, y, w, h), border_radius=8)
+        title_surf = self.font_md.render(title, True, (color[0], color[1], color[2]))
+        self.screen.blit(title_surf, (x + 12, y + 8))
+        pygame.draw.line(self.screen, (75, 85, 99), (x + 12, y + 34), (x + w - 12, y + 34), 1)
+
+    # ---------- 左侧：任务面板 ----------
+    def _draw_task_panel(self, px, py, pw, ph):
+        content_y = py + 42
+        content_h = ph - 50
+        main_w = int(pw * 0.4) - 6
+        sub_w = pw - main_w - 16
+        sub_x = px + 10 + main_w + 6     # 子任务列左边界
+        is_voice_group = (self.current_main_task == 0)  # "1. 语音动作组"
+        voice_group_action_h = 44  # Play/Reset 按钮区域高度
+        btn_w = (sub_w - 10) // 2   # 两按钮平分子任务列宽度
+        btn_h = 32
+        btn_gap = 10
+
+        # ========== 主任务列表（左半）==========
+        main_y = content_y
+        for i, main in enumerate(self.main_tasks):
+            active = (i == self.current_main_task)
+            bg = (30, 64, 175) if active else (55, 65, 81)
+            rect = pygame.Rect(px + 10, main_y, main_w, 28)
+            pygame.draw.rect(self.screen, bg, rect, border_radius=4)
+            if active:
+                pygame.draw.rect(self.screen, (96, 165, 250), rect, 2, border_radius=4)
+            txt = self.font_sm.render(main["name"], True, (255, 255, 255))
+            self.screen.blit(txt, (rect.x + 6, rect.y + 5))
+            main_y += 32
+
+        # ========== 子任务列表（右半）==========
+        sub_y = content_y
+        current_main = self.main_tasks[self.current_main_task]
+
+        # 语音动作组：在子任务区域顶部绘制 Play/Reset 按钮
+        if is_voice_group:
+            btn_y = content_y + 4
+            play_x = sub_x
+            reset_x = sub_x + btn_w + btn_gap
+
+            # Play 按钮（与子任务项对齐）
+            play_color = (21, 128, 61) if self.action_playing else (22, 163, 74)
+            play_rect = pygame.Rect(play_x, btn_y, btn_w, btn_h)
+            pygame.draw.rect(self.screen, play_color, play_rect, border_radius=6)
+            if self.action_playing:
+                pygame.draw.rect(self.screen, (74, 222, 128), play_rect, 2, border_radius=6)
+            play_txt = self.font_sm.render("▶ Play", True, (255, 255, 255))
+            self.screen.blit(play_txt, (play_rect.x + 6, play_rect.y + 6))
+
+            # Reset 按钮
+            reset_color = (185, 28, 28) if self.action_resetting else (220, 38, 38)
+            reset_rect = pygame.Rect(reset_x, btn_y, btn_w, btn_h)
+            pygame.draw.rect(self.screen, reset_color, reset_rect, border_radius=6)
+            if self.action_resetting:
+                pygame.draw.rect(self.screen, (252, 165, 165), reset_rect, 2, border_radius=6)
+            reset_txt = self.font_sm.render("⟳ Reset", True, (255, 255, 255))
+            self.screen.blit(reset_txt, (reset_rect.x + 6, reset_rect.y + 6))
+
+            # 按钮下分隔线
+            sep_y = btn_y + btn_h + 4
+            pygame.draw.line(self.screen, (75, 85, 99), (sub_x, sep_y),
+                             (px + pw - 10, sep_y), 1)
+
+            sub_y += voice_group_action_h
+
+        for j, sub_name in enumerate(current_main["subs"]):
+            # 语音动作组：支持滚动
+            if is_voice_group:
+                vis_idx = j - self.voice_scroll_offset
+                if vis_idx < 0:
+                    continue
+                # 计算可见区域
+                max_visible = (ph - 50 - voice_group_action_h - 10) // 32
+                if vis_idx >= max_visible:
+                    continue
+                actual_y = sub_y + vis_idx * 32
+            else:
+                actual_y = sub_y + j * 32
+
+            sid = f"{self.current_main_task}-{j}"
+            on = self.sub_task_states.get(sid, False) if not is_voice_group else False
+            bg = (55, 65, 81)
+            rect = pygame.Rect(px + 10 + main_w + 6, actual_y, sub_w, 28)
+            pygame.draw.rect(self.screen, bg, rect, border_radius=4)
+            txt = self.font_sm.render(sub_name, True, (255, 255, 255))
+            self.screen.blit(txt, (rect.x + 6, rect.y + 5))
+            # 语音组段落点击即发 WebSocket，不显示状态灯；其他任务保持状态灯
+            if not is_voice_group:
+                dot_color = (34, 197, 94) if on else (107, 114, 128)
+                pygame.draw.circle(self.screen, dot_color, (rect.right - 10, rect.y + 14), 5)
+
+        # 语音动作组：显示滚动提示
+        if is_voice_group:
+            total = len(current_main["subs"])
+            max_visible = (ph - 50 - voice_group_action_h - 10) // 32
+            if total > max_visible:
+                scroll_hint = self.font_sm.render(
+                    f"↑↓ 滚动  {self.voice_scroll_offset + 1}-{min(self.voice_scroll_offset + max_visible, total)}/{total}",
+                    True, (156, 163, 175))
+            sub_y += 32
+
+        # 底部：系统状态
+        status_y = py + ph - 70
+        pygame.draw.line(self.screen, (75, 85, 99), (px + 12, status_y - 6), (px + pw - 12, status_y - 6), 1)
+        st = self.font_sm.render("系统状态", True, (134, 239, 172))
+        self.screen.blit(st, (px + 12, status_y))
+        ctrl = "已连接" if self.dtu_connected else "已断开"
+        ctrl_c = (34, 197, 94) if self.dtu_connected else (239, 68, 68)
+        video = "已连接" if self.lan_connected else "已断开"
+        video_c = (34, 197, 94) if self.lan_connected else (239, 68, 68)
+        self.screen.blit(self.font_sm.render(f"控制链路:", True, (255,255,255)), (px + 12, status_y + 22))
+        self.screen.blit(self.font_sm.render(ctrl, True, ctrl_c), (px + pw - 90, status_y + 22))
+        self.screen.blit(self.font_sm.render(f"图传链路:", True, (255,255,255)), (px + 12, status_y + 42))
+        self.screen.blit(self.font_sm.render(video, True, video_c), (px + pw - 90, status_y + 42))
+
+    # ---------- 中间：视频面板 ----------
+    def _draw_video_panel(self, px, py, pw, ph):
+        content_y = py + 42
+        vw = pw - 24
+        vh = ph - 80
+        # 视频背景
+        pygame.draw.rect(self.screen, (0, 0, 0), (px + 12, content_y, vw, vh), border_radius=6)
+        if self.camera_frame is not None and self.camera_playing:
+            # 缩放视频到合适大小
+            frame_scaled = pygame.transform.scale(self.camera_frame, (vw, vh))
+            self.screen.blit(frame_scaled, (px + 12, content_y))
+        elif not self.camera_playing:
+            # 暂停覆盖
+            overlay = pygame.Surface((vw, vh), pygame.SRCALPHA)
+            overlay.fill((0, 0, 0, 180))
+            self.screen.blit(overlay, (px + 12, content_y))
+            pause = self.font_md.render("⏸ 已暂停 [C键播放]", True, (255, 255, 255))
+            self.screen.blit(pause, (px + 12 + vw//2 - pause.get_width()//2,
+                                     content_y + vh//2 - pause.get_height()//2))
+        else:
+            # 等待连接
+            wait = self.font_md.render("等待视频流连接...", True, (107, 114, 128))
+            self.screen.blit(wait, (px + 12 + vw//2 - wait.get_width()//2,
+                                    content_y + vh//2 - wait.get_height()//2))
+
+        # 视频信息
+        info_y = content_y + vh + 8
+        self.screen.blit(self.font_sm.render("分辨率: 480P@20fps", True, (156, 163, 175)), (px + 12, info_y))
+        cw = int(self.font_sm.size("分辨率: 480P@20fps")[0])
+        self.screen.blit(self.font_sm.render("编码: H.264", True, (156, 163, 175)), (px + 12 + cw + 30, info_y))
+        self.screen.blit(self.font_sm.render("延迟: <200ms", True, (156, 163, 175)), (px + pw - 90, info_y))
+
+    # ---------- 右侧：日志面板 ----------
+    def _draw_log_panel(self, px, py, pw, ph):
+        content_y = py + 42
+        log_h = ph - 50
+        # 画日志背景
+        log_rect = pygame.Rect(px + 10, content_y, pw - 20, log_h)
+        pygame.draw.rect(self.screen, (17, 24, 39), log_rect, border_radius=4)
+
+        # 显示最近日志
+        vis_count = min(len(self.logs), int(log_h / 18))
+        start = len(self.logs) - vis_count
+        for i in range(vis_count):
+            ts, msg, level = self.logs[start + i]
+            if level == "success":
+                c = (34, 197, 94)
+            elif level == "warning":
+                c = (250, 204, 21)
+            elif level == "error":
+                c = (239, 68, 68)
+            else:
+                c = (156, 163, 175)
+            txt = f"[{ts}] {msg}"
+            surf = self.font_mono.render(txt, True, c)
+            self.screen.blit(surf, (log_rect.x + 6, log_rect.y + 6 + i * 18))
+
+        # 操作说明
+        help_y = content_y + log_h + 10
+        help_title = self.font_md.render("操作说明", True, (250, 204, 21))
+        self.screen.blit(help_title, (px + 12, help_y))
+        helps = [
+            "• 摇杆: 控制机器人移动",
+            "• 数字键1-4: 切换主任务分类",
+            "• C键: 相机播放/暂停",
+        ]
+        for i, h in enumerate(helps):
+            self.screen.blit(self.font_sm.render(h, True, (209, 213, 219)), (px + 12, help_y + 24 + i * 20))
+
+    # ---------- 底部：摇杆状态 ----------
+    def _draw_joystick_panel(self):
+        panel_y = self.win_h - 90
+        panel_h = 82
+        pygame.draw.rect(self.screen, (31, 41, 55), (12, panel_y, self.win_w - 24, panel_h), border_radius=8)
+        title = self.font_md.render("遥控器数据透传", True, (96, 165, 250))
+        self.screen.blit(title, (24, panel_y + 6))
+        pygame.draw.line(self.screen, (75, 85, 99), (24, panel_y + 30), (self.win_w - 24, panel_y + 30), 1)
+
+        # 摇杆状态信息
+        info_x = 30
+        info_y = panel_y + 40
+
+        if self.joystick_connected:
+            # 显示手柄连接信息
+            conn_color = (34, 197, 94)
+            conn_text = f"✅ {self.joystick_name} | 轴:{self.joystick_num_axes} 按钮:{self.joystick_num_buttons} 十字帽:{self.joystick_num_hats}"
+        else:
+            conn_color = (239, 68, 68)
+            conn_text = "❌ 未检测到手柄"
+
+        self.screen.blit(self.font_sm.render(conn_text, True, conn_color), (info_x, info_y))
+
+        # 显示当前各轴数值（仅当有手柄时）
+        if self.joystick_connected:
+            axis_strs = []
+            for i in range(min(self.joystick_num_axes, 6)):  # 最多显示6个轴
+                try:
+                    v = self.joystick.get_axis(i)
+                    if USE_LINUX_AXIS_MAP:
+                        center = -0.5 if i % 2 == 0 else 0.5
+                        v = -((v - center) / 0.5)  # 取反
+                    else:
+                        v = -v  # 取反
+                    axis_strs.append(f"A{i}:{v:+.2f}")
+                except:
+                    pass
+            axis_text = "  ".join(axis_strs)
+            self.screen.blit(self.font_sm.render(axis_text, True, (156, 163, 175)), (info_x + 12, info_y + 22))
+
+            # 按钮快速预览
+            btn_on = sum(1 for i in range(self.joystick_num_buttons) if self.joystick.get_button(i))
+            btn_text = f"按钮按下: {btn_on}/{self.joystick_num_buttons}"
+            cw = int(self.font_sm.size(axis_text)[0]) if axis_text else 0
+            self.screen.blit(self.font_sm.render(btn_text, True, (250, 204, 21)), (info_x + 12 + cw + 40, info_y + 22))
+        else:
+            self.screen.blit(self.font_sm.render("请在启动前连接USB手柄", True, (107, 114, 128)), (info_x + 12, info_y + 22))
+
+        # 底部提示
+        hint = self.font_sm.render("摇杆=运动控制 | 数字键1-4=切换主任务 | C=相机 | ESC=退出", True, (156, 163, 175))
+        self.screen.blit(hint, (self.win_w//2 - hint.get_width()//2, panel_y + panel_h - 18))
+
+    def run(self):
+        clock = pygame.time.Clock()
+        running = True
+        # 摇杆透传降频配置（从配置常量读取 FPS）
+        JOYSTICK_FPS = 15                     # 透传发送帧率
+        joystick_interval = 1.0 / JOYSTICK_FPS
+        print("========== 三代人形机器人远程控制系统 ==========")
+        print(f"✅ 摇杆透传降频 {JOYSTICK_FPS}Hz | 数字键 1-4 切换主任务")
+        print(f"✅ 摇杆: {self.joystick_name if self.joystick_connected else '未连接'}")
+        print("================================================\n")
+
+        while running:
+            current_time = time.time()
+
+            # 事件循环
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    running = False
+
+                if event.type == pygame.KEYDOWN:
+                    # 数字键1-4：仅切换左侧任务面板，不再发送串口指令
+                    if pygame.K_1 <= event.key <= pygame.K_4:
+                        idx = event.key - pygame.K_1
+                        if idx < len(self.main_tasks):
+                            self.current_main_task = idx
+                            self.add_log(f"切换到主任务: {self.main_tasks[idx]['name']}", "info")
+                            self.last_tip = f"{self.main_tasks[idx]['name']}"
+
+                    # C 键播放/暂停相机
+                    elif event.key == pygame.K_c:
+                        self.toggle_camera_play()
+
+                    # ESC 退出
+                    elif event.key == pygame.K_ESCAPE:
+                        running = False
+
+                # ---- 鼠标点击：左侧任务面板 ----
+                if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                    mx, my = event.pos
+                    self._handle_task_click(mx, my)
+
+                # ---- 滚轮事件：语音动作组子任务滚动 ----
+                if event.type == pygame.MOUSEWHEEL:
+                    if self.current_main_task == 0:  # 语音动作组
+                        panel_y = 72
+                        panel_h = self.win_h - panel_y - 100
+                        left_w = int(self.win_w * 0.23)
+                        left_x = 12
+                        sub_x = left_x + 10 + int(left_w * 0.4) + 6
+                        sub_w = left_w - int(left_w * 0.4) - 16
+                        # 检查鼠标是否在子任务区域
+                        mx, my = pygame.mouse.get_pos()
+                        if sub_x <= mx <= sub_x + sub_w and panel_y <= my <= panel_y + panel_h:
+                            max_visible = (panel_h - 50 - 44) // 32  # 可见行数
+                            max_offset = max(0, len(self.main_tasks[0]["subs"]) - max_visible)
+                            self.voice_scroll_offset = max(0, min(max_offset,
+                                self.voice_scroll_offset - event.y))
+
+            # ===================== 【摇杆透传降频发送】 =====================
+            if self.joystick_connected and self.ser and self.ser.is_open:
+                # 按降频间隔发送
+                if current_time - self.last_joystick_send_time >= joystick_interval:
+                    buf = self._read_joystick_raw()
+                    if buf:
+                        # 调试：每5秒打印一次各轴值
+                        if int(current_time) % 5 == 0 and int(current_time) != getattr(self, '_last_debug_ts', 0):
+                            self._last_debug_ts = int(current_time)
+                            axes_str = '  '.join(
+                                f"A{i}:{self.joystick.get_axis(i):+.3f}"
+                                for i in range(self.joystick_num_axes)
+                            )
+                            print(f"[JOY] {axes_str}")
+                        try:
+                            self.ser.write(buf)
+                        except Exception as e:
+                            print(f"❌ 透传发送失败: {e}")
+                        self.last_joystick_send_time = current_time
+            # ===============================================================
+
+            self.draw_ui()
+            clock.tick(60)
+
+        # 退出前关闭相机、串口和 WebSocket
+        self.ws_running = False
+        self.hs_running = False
+        self.camera_running = False
+        self.camera_playing = False
+        self.camera_active = False
+        self.camera_frame = None
+        if self.ser:
+            self.ser.close()
+        pygame.quit()
+        print("程序已安全退出")
+
+if __name__ == "__main__":
+    app = RobotRemote()
+    app.run()=== ./start.sh ===
+#!/bin/bash
+# ============================================================================
+# module_manager_hub — 模块管理器启动脚本
+# 同一进程内运行三个 node（ModuleManager + SerialJoyBridge + CameraStreamer）
+# ============================================================================
+set -e
+
+SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$SELF_DIR"
+
+# 向上找 setup.sh（install/module_manager_hub/ → install/）
+PARENT_DIR="$(cd "$SELF_DIR/.." && pwd)"
+if [ -f "$PARENT_DIR/setup.sh" ]; then
+    COLCON_CURRENT_PREFIX=$SELF_DIR source "$PARENT_DIR/setup.sh"
+else
+    echo "[module_manager_hub] 警告: 未找到 $PARENT_DIR/setup.sh，请先 source workspace"
+fi
+
+echo "[module_manager_hub] 启动中..."
+ros2 launch module_manager_hub manager.launch.py=== ./include/module_manager_hub/ros/heartbeat_collector_node.h ===
+#pragma once
+
+#include <rclcpp/rclcpp.hpp>
+#include <map>
+#include <memory>
+#include <string>
+#include <yaml-cpp/yaml.h>
+
+#include "module_manager_hub/core/heartbeat_collector_core.h"
+
+/// 心跳汇聚节点 —— ROS Node 层
+/// - 为每个外部 target 建立话题订阅
+/// - 同进程内的服务与 CollectorNode 共享生死，无需心跳追踪
+/// - 持有 HeartbeatCollectorCore（文件写入 + UDP 上报 + 超时检测）
+class HeartbeatCollectorNode : public rclcpp::Node {
+public:
+  explicit HeartbeatCollectorNode(const std::string &name,
+                                  const rclcpp::NodeOptions &opts = rclcpp::NodeOptions());
+  ~HeartbeatCollectorNode() override;
+
+private:
+  void loadConfig(const YAML::Node &root);
+  void onHeartbeat(const std::string &name) { core_.onHeartbeat(name, this->now().seconds()); }
+  void checkTimer();
+  void sendUdpReport();
+
+  HeartbeatCollectorCore core_;
+
+  std::map<std::string, rclcpp::SubscriptionBase::SharedPtr> subs_;
+  rclcpp::TimerBase::SharedPtr check_timer_;
+  rclcpp::TimerBase::SharedPtr udp_timer_;
+};
+=== ./include/module_manager_hub/ros/serial_joy_bridge_node.h ===
+#ifndef SERIAL_JOY_BRIDGE_NODE_H
+#define SERIAL_JOY_BRIDGE_NODE_H
+
+#include <rclcpp/rclcpp.hpp>
+#include <sensor_msgs/msg/joy.hpp>
+
+#include "module_manager_hub/common/serial_reader.h"
+#include "module_manager_hub/core/joy_bridge_core.h"
+
+/// 摇杆串口桥接节点 —— ROS Node 层
+/// - 持有 SerialReader（串口读写）
+/// - 持有 JoyBridgeCore（协议解析）
+/// - 发布 /joy 话题
+class SerialJoyBridgeNode : public rclcpp::Node
+{
+public:
+  explicit SerialJoyBridgeNode(const std::string &name,
+                               const rclcpp::NodeOptions &opts = rclcpp::NodeOptions());
+  ~SerialJoyBridgeNode();
+
+private:
+  void onSerialData(const uint8_t *data, size_t len);
+
+  SerialReader serial_reader_;
+  JoyBridgeCore joy_core_;
+
+  std::string serial_port_;
+  int serial_baud_;
+
+  rclcpp::Publisher<sensor_msgs::msg::Joy>::SharedPtr joy_pub_;
+};
+
+#endif // SERIAL_JOY_BRIDGE_NODE_H
+=== ./include/module_manager_hub/ros/module_manager_node.h ===
+#pragma once
+
+#include <rclcpp/rclcpp.hpp>
+#include <map>
+#include <string>
+#include <vector>
+
+#include <yaml-cpp/yaml.h>
+
+#include "module_manager_hub/common/serial_reader.h"
+#include "module_manager_hub/core/module_manager_core.h"
+#include "module_manager_hub/msg/robotarmcontrol.hpp"
+#include <geometry_msgs/msg/twist.hpp>
+#include <std_msgs/msg/string.hpp>
+#include <std_msgs/msg/bool.hpp>
+
+/// 模块管理器节点 —— ROS Node 层
+/// - 持有 SerialReader（串口读写）
+/// - 持有 ModuleManagerCore（协议解析 + 速度插值）
+/// - 发布 cmd_vel / control_mode / hwswitch / action_cmd 等话题
+class ModuleManagerNode : public rclcpp::Node {
+public:
+  explicit ModuleManagerNode(const std::string &name,
+                             const rclcpp::NodeOptions &opts = rclcpp::NodeOptions());
+  ~ModuleManagerNode() override;
+
+private:
+  // 从 YAML 加载配置
+  void loadSerialConfig(const YAML::Node &root);
+  void loadTrackedModules(const YAML::Node &mods);
+  void loadCmdRoute(const YAML::Node &route_node);
+  void dispatchCommand(const std::string &cmd, const std::vector<double> &params);
+
+  // SerialReader 裸数据回调 → 交给 ModuleManagerCore 解析
+  void onSerialData(const uint8_t *data, size_t len);
+  void onParsedPacket(uint8_t cmd_type, const std::vector<uint8_t>& payload);
+  void sendSerialStatus();
+
+  SerialReader serial_reader_;
+  ModuleManagerCore core_;
+
+  // 订阅/发布器
+  std::map<std::string, rclcpp::SubscriptionBase::SharedPtr> watch_subs_;
+  rclcpp::TimerBase::SharedPtr status_timer_;  // 500ms 定期推送串口状态
+
+  std::map<std::string, CmdRoute> cmd_routes_;
+  std::map<std::string, rclcpp::Publisher<module_manager_hub::msg::Robotarmcontrol>::SharedPtr> arm_control_pubs_;
+
+  rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_pub_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr control_mode_pub_;
+  rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr hw_switch_pub_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr action_cmd_pub_;
+
+  std::string current_mode_;
+  bool hw_switch_state_;
+
+  static constexpr double TASK_CMD_DEBOUNCE_SEC = 2.0;
+  double last_task_cmd_time_ = 0.0;
+};
+=== ./include/module_manager_hub/ros/camera_streamer_node.h ===
+#pragma once
+
+#include <rclcpp/rclcpp.hpp>
+#include <sensor_msgs/msg/image.hpp>
+
+#include "module_manager_hub/core/camera_streamer_core.h"
+
+/// 相机推流节点 —— ROS Node 层
+/// - 订阅 /camera1/image_raw
+/// - 持有 CameraStreamerCore（编码 + TCP 推流）
+/// - 与 HeartbeatCollectorNode 同进程，无需单独心跳
+class CameraStreamerNode : public rclcpp::Node
+{
+public:
+  explicit CameraStreamerNode(const std::string& node_name,
+                              const rclcpp::NodeOptions &opts = rclcpp::NodeOptions());
+  ~CameraStreamerNode() override;
+
+private:
+  void imageCallback(const sensor_msgs::msg::Image::SharedPtr msg);
+
+  CameraStreamerCore core_;
+  std::thread stream_thread_;
+  std::atomic<bool> running_{true};
+
+  std::string image_topic_;
+
+  rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr image_sub_;
+};
+=== ./include/module_manager_hub/core/heartbeat_collector_core.h ===
+#pragma once
+
+#include <cstdint>
+#include <functional>
+#include <map>
+#include <string>
+#include <vector>
+
+// =====================================================================
+// 二进制 UDP 上报协议（终版）
+// 帧头  8B: Magic(2) + Ver(1) + Count(1) + Seq(1) + Reserved(1) + CRC32(4)
+// 条目 12B: SvcID(2) + State(1) + Reserved(1) + LastHeartbeat(8)
+//
+// State 枚举:
+//   0 = OFFLINE    1 = ONLINE     2 = STARTING
+//   3 = STOPPING   4 = UNHEALTHY  5-255 = 保留
+// =====================================================================
+constexpr uint16_t UDP_MAGIC     = 0x4852;  // "HR"
+constexpr uint8_t  UDP_VERSION   = 1;
+constexpr size_t   UDP_HEADER_LEN = 8;
+constexpr size_t   UDP_ENTRY_LEN  = 12;     // svc_id(2) + state(1) + reserved(1) + last_hb(8)
+
+enum SvcState : uint8_t {
+  SVC_OFFLINE   = 0,
+  SVC_ONLINE    = 1,
+  SVC_STARTING  = 2,
+  SVC_STOPPING  = 3,
+  SVC_UNHEALTHY = 4,
+};
+
+#pragma pack(push, 1)
+struct UdpHeader {
+  uint16_t magic;
+  uint8_t  version;
+  uint8_t  count;
+  uint8_t  seq;
+  uint8_t  reserved;
+  uint32_t crc32;    // 覆盖整个包（CRC 字段本身填 0 后计算）
+};
+
+struct UdpEntry {
+  uint16_t svc_id;
+  uint8_t  state;
+  uint8_t  reserved;
+  double   last_hb;
+};
+#pragma pack(pop)
+
+/// 回调类型：日志输出（由 Node 层注入）
+using HbLogCallback = std::function<void(int level, const std::string& msg)>;
+
+/// 心跳汇聚核心 —— 纯业务逻辑，不依赖 ROS
+/// 逻辑 A：原子写入心跳文件 → Runtime 本地监控
+/// 逻辑 B：二进制 UDP 上报远端中控
+class HeartbeatCollectorCore {
+public:
+  struct HeartbeatTarget {
+    std::string name;
+    std::string topic;       // 仅标识用，实际订阅在 Node 层
+    std::string msg_type;
+    uint16_t svc_id = 0;
+    double last_time = 0.0;
+    uint8_t state = SVC_OFFLINE;
+  };
+
+  HeartbeatCollectorCore();
+  ~HeartbeatCollectorCore();
+
+  /// 设置日志回调
+  void setLogCallback(HbLogCallback cb) { log_cb_ = std::move(cb); }
+
+  /// 加载配置
+  void loadConfig(const std::string& heartbeat_dir, double timeout_sec,
+                  const std::string& udp_host, int udp_port,
+                  const std::vector<HeartbeatTarget>& targets);
+
+  /// 逻辑 A：原子写入心跳文件
+  void writeHeartbeatFile(const std::string& name, double timestamp);
+
+  /// 初始化 UDP socket
+  void initUdpSocket();
+
+  /// 逻辑 B：UDP 上报
+  void sendUdpReport();
+
+  /// 心跳接收（更新目标状态）
+  void onHeartbeat(const std::string& name, double now);
+
+  /// 超时检测
+  void checkTimeout(double now);
+
+  /// 获取所有心跳目标（Node 层读取用）
+  const std::vector<HeartbeatTarget>& targets() const { return targets_; }
+  std::vector<HeartbeatTarget>& targets() { return targets_; }
+
+  /// CRC32 计算
+  static uint32_t calcCRC32(const uint8_t* data, size_t len);
+
+private:
+  std::vector<HeartbeatTarget> targets_;
+  std::string heartbeat_dir_;
+  double timeout_sec_ = 8.0;
+
+  // UDP 上报
+  std::string udp_host_;
+  int udp_port_ = 0;
+  int udp_sock_ = -1;
+  uint8_t seq_ = 0;
+
+  // 日志回调
+  HbLogCallback log_cb_;
+};
+=== ./include/module_manager_hub/core/joy_bridge_core.h ===
+#pragma once
+
+#include <cstdint>
+#include <vector>
+#include <functional>
+
+/// 摇杆数据解析结果（无 ROS 依赖）
+struct JoyFrameData {
+  std::vector<float> axes;
+  std::vector<int32_t> buttons;
+};
+
+/// 摇杆协议核心 —— 纯数据解析，不依赖 ROS
+/// - 输入：原始串口字节流
+/// - 输出：解析后的摇杆帧数据（axes / buttons）
+class JoyBridgeCore {
+public:
+  JoyBridgeCore();
+
+  /// 喂入原始串口数据，返回本次解析出的所有完整帧
+  std::vector<JoyFrameData> feedData(const uint8_t* data, size_t len);
+
+  /// 重置解析状态（清空接收缓存）
+  void reset();
+
+  /// 累计解析帧数（统计用）
+  size_t frameCount() const { return frame_count_; }
+
+private:
+  bool tryParseFrame(JoyFrameData& out);
+
+  static uint16_t calcCRC16(const uint8_t* data, size_t len);
+
+  std::vector<uint8_t> rx_buf_;
+  size_t frame_count_ = 0;
+};
+=== ./include/module_manager_hub/core/camera_streamer_core.h ===
+#pragma once
+
+#include <atomic>
+#include <cstdint>
+#include <functional>
+#include <mutex>
+#include <string>
+#include <thread>
+#include <vector>
+
+#include <opencv2/core.hpp>
+
+extern "C" {
+#include <libavcodec/avcodec.h>
+#include <libavutil/opt.h>
+#include <libswscale/swscale.h>
+}
+
+/// 回调类型：日志输出（由 Node 层注入，转发到 RCLCPP）
+using CoreLogCallback = std::function<void(int level, const std::string& msg)>;
+
+/// 相机推流核心 —— 纯编码 + TCP 传输逻辑，不依赖 ROS
+/// - 编码器管理（libx264）
+/// - TCP server 管理
+/// - 推流主循环
+class CameraStreamerCore {
+public:
+  CameraStreamerCore();
+  ~CameraStreamerCore();
+
+  /// 设置日志回调（Node 层注入）
+  void setLogCallback(CoreLogCallback cb) { log_cb_ = std::move(cb); }
+
+  /// 初始化 H.264 编码器
+  bool initEncoder(int width, int height, int bitrate_kbps);
+
+  /// 清理编码器
+  void cleanupEncoder();
+
+  /// 编码一帧 BGR 图像为 H.264
+  bool encodeFrame(const cv::Mat& bgr, std::vector<uint8_t>& out, bool force_key);
+
+  /// 初始化 TCP server
+  bool initTcpServer(int port);
+
+  /// 更新最新帧（线程安全，由图像回调调用）
+  void setFrame(const cv::Mat& frame);
+
+  /// 获取最新帧（线程安全）
+  bool getFrame(cv::Mat& frame);
+
+  /// 推流主循环（阻塞运行，直到 running 被置 false）
+  void streamLoop(std::atomic<bool>& running,
+                  std::function<bool()> ok_check = nullptr);
+
+  /// 获取当前编码器参数（用于日志）
+  int width() const { return enc_width_; }
+  int height() const { return enc_height_; }
+  int bitrate() const { return bitrate_kbps_; }
+  AVRational framerate() const { return enc_ctx_ ? enc_ctx_->framerate : AVRational{0, 0}; }
+
+private:
+  void logInfo(const std::string& msg);
+  void logError(const std::string& msg);
+  void logWarn(const std::string& msg);
+
+  // 编码器
+  AVCodecContext* enc_ctx_ = nullptr;
+  AVFrame* enc_frame_ = nullptr;
+  AVPacket* enc_pkt_ = nullptr;
+  SwsContext* sws_ctx_ = nullptr;
+  int64_t pts_ = 0;
+  int enc_width_ = 640, enc_height_ = 480;
+  int bitrate_kbps_ = 3000;
+  bool encoder_ready_ = false;
+
+  // TCP
+  int server_fd_ = -1;
+  int client_fd_ = -1;
+  int port_ = 8888;
+
+  // 帧缓存
+  cv::Mat latest_frame_;
+  std::mutex frame_mutex_;
+
+  // 日志回调
+  CoreLogCallback log_cb_;
+};
+=== ./include/module_manager_hub/core/module_manager_core.h ===
+#pragma once
+
+#include <atomic>
+#include <cstdint>
+#include <functional>
+#include <map>
+#include <string>
+#include <thread>
+#include <vector>
+
+#include "module_manager_hub/core/module.h"
+
+// 32 字节固定帧串口协议常量（机器人遥控协议）
+constexpr uint8_t  PROTO_SOF0       = 0xAA;
+constexpr uint8_t  PROTO_SOF1       = 0x55;
+constexpr size_t   PROTO_HEADER_LEN = 4;    // SOF0 + SOF1 + CmdType + PayLen
+constexpr size_t   PROTO_DATA_LEN   = 16;
+constexpr size_t   PROTO_RESERVED   = 10;
+constexpr size_t   PROTO_FRAME_LEN  = 32;
+
+constexpr uint8_t CMD_MOVE       = 0x01;
+constexpr uint8_t CMD_TASK       = 0x02;
+constexpr uint8_t CMD_HEARTBEAT  = 0x03;
+constexpr uint8_t CMD_STATUS     = 0x04;
+
+struct CmdRoute {
+  std::string topic;
+  std::string msg_type;
+};
+
+/// 回调类型：日志输出
+using MmLogCallback = std::function<void(int level, const std::string& msg)>;
+
+/// 解析后的指令数据（Node 层据此发布 ROS 消息）
+struct ParsedMoveCmd {
+  float linear;
+  float angular;
+};
+
+struct ParsedTaskCmd {
+  uint8_t task_id;
+};
+
+struct ParsedHeartbeatCmd {
+  // 急停信号，无附加数据
+};
+
+/// 模块管理器核心 —— 纯协议解析 + 速度插值逻辑，不依赖 ROS
+/// - 32 字节固定帧协议解析
+/// - 速度平滑插值
+/// - 串口帧组帧
+class ModuleManagerCore {
+public:
+  ModuleManagerCore();
+  ~ModuleManagerCore();
+
+  void setLogCallback(MmLogCallback cb) { log_cb_ = std::move(cb); }
+
+  // ========== 32 字节固定帧协议解析 ==========
+  /// 喂入原始串口数据，返回本次解析出的指令类型列表
+  /// 返回值：pair<cmd_type, payload>
+  std::vector<std::pair<uint8_t, std::vector<uint8_t>>>
+  feedSerialData(const uint8_t* data, size_t len);
+
+  /// 组帧
+  void buildSerialFrame(uint8_t cmd_type, const uint8_t* payload,
+                        size_t payload_len, std::vector<uint8_t>& out_frame);
+
+  // ========== 速度插值 ==========
+  void startSpeedLoop();
+  void stopSpeedLoop();
+  void setTargetSpeed(float linear, float angular);
+  float currentLinear() const { return current_linear_; }
+  float currentAngular() const { return current_angular_; }
+  std::atomic<float>& targetLinear() { return target_linear_; }
+  std::atomic<float>& targetAngular() { return target_angular_; }
+
+  // ========== CRC16 ==========
+  static uint16_t calcCRC16(const uint8_t* data, size_t len);
+
+  // ========== 模块状态追踪 ==========
+  void updateModuleHeartbeat(const std::string& name, double now);
+  const std::map<std::string, TrackedModule>& trackedModules() const { return tracked_modules_; }
+  std::map<std::string, TrackedModule>& trackedModules() { return tracked_modules_; }
+
+private:
+  void interpolateSpeedLoop();
+
+  // 帧解析
+  std::vector<uint8_t> rx_frame_;
+  uint8_t sof_marker_[2] = {PROTO_SOF0, PROTO_SOF1};
+
+  // 模块追踪
+  std::map<std::string, TrackedModule> tracked_modules_;
+
+  // 速度插值
+  static constexpr double SPEED_INTERPOLATE_HZ = 80.0;
+  static constexpr double LINEAR_ACCEL  = 0.2;
+  static constexpr double ANGULAR_ACCEL = 0.3;
+  static constexpr double LINEAR_MAX    = 0.6;
+  static constexpr double ANGULAR_MAX   = 1.0;
+
+  std::thread speed_thread_;
+  std::atomic<bool> speed_running_{false};
+  std::atomic<float> target_linear_{0.0f};
+  std::atomic<float> target_angular_{0.0f};
+  float current_linear_  = 0.0f;
+  float current_angular_ = 0.0f;
+
+  MmLogCallback log_cb_;
+};
+=== ./include/module_manager_hub/core/module.h ===
+#pragma once
+#include <string>
+
+/// 被追踪模块的状态（由话题心跳驱动，不再管理进程生命周期）
+struct TrackedModule {
+  std::string name;
+  std::string watch_topic;
+  std::string watch_type;
+  bool online = false;
+  double last_msg_time = 0.0;
+};
+=== ./include/module_manager_hub/common/serial_reader.h ===
+#pragma once
+
+#include <boost/asio.hpp>
+#include <array>
+#include <functional>
+#include <string>
+#include <thread>
+#include <cstdint>
+
+/// 串口读取器 —— 只负责原始字节的收发，不涉及任何协议解析
+/// 通过 DataCallback 将裸字节吐给上层，由各 node 自行完成帧同步/校验
+class SerialReader {
+public:
+    using DataCallback = std::function<void(const uint8_t* data, size_t len)>;
+
+    SerialReader();
+    ~SerialReader();
+
+    /// 打开串口并启动异步读取线程
+    bool open(const std::string& port, int baud_rate);
+
+    /// 关闭串口，停止 IO 线程
+    void close();
+    bool is_open() const;
+
+    /// 设置裸数据回调（收到原始字节时触发）
+    void setDataCallback(DataCallback cb) { data_cb_ = std::move(cb); }
+
+    /// 同步写
+    void write(const uint8_t* data, size_t len);
+
+    /// 异步写（拷贝 frame，线程安全）
+    void writeAsync(const uint8_t* data, size_t len);
+
+private:
+    void doRead();
+
+    boost::asio::io_context io_context_;
+    boost::asio::serial_port serial_port_;
+    std::thread io_thread_;
+    bool running_ = false;
+
+    std::array<uint8_t, 256> rx_buf_;
+    DataCallback data_cb_;
+};
+=== ./srv/ModuleControl.srv ===
+string module_name
+uint8 cmd  # 1启动 2停止 3重启 4禁用
+---
+bool success
+string message=== ./stop.sh ===
+#!/bin/bash
+# ============================================================================
+# module_manager_hub — 模块管理器停止脚本
+# ============================================================================
+set -e
+
+SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
+SERVICE_NAME="module_manager_node"
+
+echo "[module_manager_hub] 停止中..."
+
+# 1) 尝试通过 ros2 lifecycle 或 service 停止（如果有）
+# 2) 直接 pkill 进程（主进程含三个 node）
+pkill -f "$SERVICE_NAME" 2>/dev/null || true
+
+# 等待进程退出
+sleep 1
+if pgrep -f "$SERVICE_NAME" > /dev/null 2>&1; then
+    echo "[module_manager_hub] 强制终止..."
+    pkill -9 -f "$SERVICE_NAME" 2>/dev/null || true
+fi
+
+echo "[module_manager_hub] 已停止"

@@ -86,3 +86,10 @@ install(DIRECTORY services/ DESTINATION services
     PATTERN "*.pyc" EXCLUDE
     PATTERN "__pycache__" EXCLUDE
 )
+
+# ============================================================================
+# 单元测试（由 BUILD_TESTING 控制）
+# ============================================================================
+if(BUILD_TESTING)
+    add_subdirectory(tests)
+endif()

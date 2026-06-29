@@ -6,6 +6,16 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 find_package(yaml-cpp REQUIRED)
 
+include(CTest)
+option(BUILD_TESTING "Build unit tests" ON)
+
+# ============================================================================
+# GoogleTest (system-installed)
+# ============================================================================
+if(BUILD_TESTING)
+    find_package(GTest REQUIRED)
+endif()
+
 # ============================================================================
 # 源码编译
 # ============================================================================

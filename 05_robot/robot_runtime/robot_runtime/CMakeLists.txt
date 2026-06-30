@@ -57,3 +57,9 @@ install(FILES start_runtime.sh DESTINATION .
 
 # 环境设置
 install(FILES setup.bash local_setup.bash DESTINATION .)
+
+# 服务目录 — 整个拷贝（每个服务是一个完整 包 + start/stop.sh）
+install(DIRECTORY services/ DESTINATION services
+    PATTERN "*.pyc" EXCLUDE
+    PATTERN "__pycache__" EXCLUDE
+)

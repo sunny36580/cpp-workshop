@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/runtime.h"
+#include "runtime/monitor/monitor_manager.h"
 
 #include <cstdio>
 #include <string>

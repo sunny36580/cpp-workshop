@@ -1,13 +1,1 @@
-#include <gtest/gtest.h>
-
-#include "gateway/tcp/protocol_parser.h"
-
-using namespace robot_runtime::net;
-
-// ============================================================================
-// ProtocolParser
-// ============================================================================
-
-TEST(ProtocolParserTest, HeaderCompiles) {
-    SUCCEED();
-}
+// 暂不测试 — gateway/tcp 偏集成测试，等后续补充

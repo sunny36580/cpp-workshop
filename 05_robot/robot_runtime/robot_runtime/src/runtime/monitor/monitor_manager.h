@@ -6,8 +6,6 @@
 #include <atomic>
 #include <thread>
 
-#include "runtime/monitor/detector/file_heartbeat_detector.h"
-
 namespace robot_runtime {
 
 class ServiceManager;
@@ -20,7 +18,7 @@ public:
     void start();
     void stop();
 
-    /// 从 YAML 加载文件心跳检测器配置（可选）
+    /// 从 YAML 加载监控配置
     void load_config(const std::string& config_path);
 
     struct FailureRecord {
@@ -40,10 +38,6 @@ private:
     std::atomic<bool> running_{false};
     std::thread monitor_thread_;
     std::vector<FailureRecord> failures_;
-
-    // 文件心跳检测器（可选，由配置决定是否启用）
-    bool file_hb_enabled_ = false;
-    FileHeartbeatDetector file_hb_detector_;
 };
 
 } // namespace robot_runtime

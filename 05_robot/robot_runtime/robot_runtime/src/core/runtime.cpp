@@ -1,4 +1,10 @@
 #include "core/runtime.h"
+#include "adapter/ros2/ros2_heartbeat_source.h"
+#include "orchestration/mode/mode_manager.h"
+#include "runtime/monitor/monitor_manager.h"
+#include "runtime/monitor/heartbeat/heartbeat_monitor.h"
+#include "runtime/monitor/heartbeat/i_heartbeat_source.h"
+#include "runtime/process/dependency_manager/dependency_manager.h"
 #include "gateway/tcp/tcp_server.h"
 
 #include <cstdio>
@@ -50,6 +56,10 @@ bool Runtime::init() {
     // 加载监控配置（含文件心跳检测）
     mon_->load_config(config_dir_ + "/monitor.yaml");
     mon_->start();
+
+    // 初始化心跳监控（纯内存状态机，无文件/ROS 依赖）
+    init_heartbeat_monitor();
+
     printf("[Runtime] initialized\n");
 
     // 自动加载网络配置并启动 TCP 服务
@@ -107,6 +117,14 @@ void Runtime::serve() {
     }
 }
 
+ServiceManager& Runtime::service_manager() { return *sm_; }
+ModeManager&    Runtime::mode_manager()    { return *mm_; }
+MonitorManager& Runtime::monitor_manager() { return *mon_; }
+HeartbeatMonitor& Runtime::heartbeat_monitor() { return *hb_mon_; }
+
+// =====================================================================
+// 服务 / 模式管控（转发到各 Manager）
+// =====================================================================
 bool Runtime::start_service(const std::string& name) { return sm_->start(name); }
 bool Runtime::stop_service(const std::string& name)  { return sm_->stop(name); }
 bool Runtime::restart_service(const std::string& name) { return sm_->restart(name); }
@@ -119,6 +137,85 @@ void Runtime::apply_default_mode() { mm_->apply_default(); }
 std::vector<ServiceStatus> Runtime::all_status() const { return sm_->all_status(); }
 std::shared_ptr<ProcessService> Runtime::get_service(const std::string& name) const {
     return sm_->get(name);
+}
+
+// =====================================================================
+// 心跳监控初始化
+// =====================================================================
+void Runtime::init_heartbeat_monitor() {
+    hb_mon_ = std::make_unique<HeartbeatMonitor>();
+
+    // 尝试从 runtime.yaml 加载心跳配置
+    std::string hb_cfg = config_dir_ + "/runtime.yaml";
+    if (fs::exists(hb_cfg)) {
+        try {
+            auto root = YAML::LoadFile(hb_cfg);
+            auto hb = root["heartbeat"];
+            if (hb) {
+                double timeout = hb["timeout_sec"].as<double>(8.0);
+                hb_mon_->SetDefaultTimeoutSec(timeout);
+
+                if (hb["targets"]) {
+                    std::vector<HeartbeatTarget> targets;
+                    for (const auto& entry : hb["targets"]) {
+                        HeartbeatTarget t;
+                        t.name        = entry["name"].as<std::string>();
+                        t.timeout_sec = entry["timeout_sec"] ? entry["timeout_sec"].as<double>() : timeout;
+                        targets.push_back(t);
+                    }
+                    hb_mon_->AddTargets(targets);
+                }
+            }
+        } catch (const std::exception& e) {
+            fprintf(stderr, "[Runtime] 加载心跳配置失败: %s\n", e.what());
+        }
+    }
+
+    // 至少为每个已注册服务添加心跳监控（默认超时）
+    for (const auto& [name, svc] : sm_->services()) {
+        HeartbeatTarget t;
+        t.name = name;
+        t.timeout_sec = 8.0;
+        hb_mon_->AddTarget(t);
+    }
+
+    hb_mon_->Start();
+    printf("[Runtime] heartbeat monitor started (%zu targets)\n",
+           hb_mon_->GetAllStates().size());
+
+    // ---- ROS2 心跳话题订阅源（可选） ----
+    auto mon_cfg = config_dir_ + "/monitor.yaml";
+    if (fs::exists(mon_cfg)) {
+        try {
+            auto root = YAML::LoadFile(mon_cfg);
+            auto ros2_hb = root["monitor"]["ros2_heartbeat"];
+            if (ros2_hb && ros2_hb["enabled"].as<bool>(false)) {
+                std::vector<std::string> topics;
+                if (ros2_hb["topic_mapping"]) {
+                    for (const auto& entry : ros2_hb["topic_mapping"]) {
+                        auto topic   = entry["topic"].as<std::string>();
+                        auto service = entry["service"].as<std::string>();
+                        topics.push_back(topic + "/" + service);
+                    }
+                }
+                if (!topics.empty()) {
+                    // Ros2HeartbeatSource 是 IHeartbeatSource 的实现
+                    heartbeat_source_ = std::make_unique<Ros2HeartbeatSource>(hb_mon_.get());
+                    if (heartbeat_source_->Start(topics)) {
+                        printf("[Runtime] ROS2 heartbeat source started (%zu topics)\n",
+                               topics.size());
+                    }
+                }
+            }
+        } catch (const std::exception& e) {
+            fprintf(stderr, "[Runtime] 加载 ROS2 心跳配置失败: %s\n", e.what());
+        }
+    }
+}
+
+HeartbeatState Runtime::GetHeartbeatState(const std::string& name) const {
+    if (hb_mon_) return hb_mon_->GetState(name);
+    return {name, HeartbeatStatus::Offline, 0.0, 8.0};
 }
 
 } // namespace robot_runtime

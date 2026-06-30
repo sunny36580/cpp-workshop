@@ -1,15 +1,26 @@
 #pragma once
 
-#include "runtime/process/service_manager/service_manager.h"
-#include "orchestration/mode/mode_manager.h"
-#include "runtime/monitor/monitor_manager.h"
-#include "runtime/process/dependency_manager/dependency_manager.h"
-#include "gateway/tcp/tcp_server.h"
-
 #include <string>
 #include <memory>
+#include <vector>
 
+// 值类型数据结构（轻量，必须 include 以支持返回值）
+#include "runtime/process/service_manager/service_manager.h"   // ServiceStatus, ProcessService
+#include "runtime/monitor/heartbeat/heartbeat_state.h"          // HeartbeatState
+
+// 前向声明 — 所有具体实现类只在 .cpp 中 include
 namespace robot_runtime {
+class ServiceManager;
+class ModeManager;
+class MonitorManager;
+class DependencyManager;
+class HeartbeatMonitor;
+class IHeartbeatSource;
+
+namespace net {
+struct TcpConfig;
+class TcpServer;
+} // namespace net
 
 class Runtime {
 public:
@@ -35,10 +46,14 @@ public:
     std::vector<ServiceStatus> all_status() const;
     std::shared_ptr<ProcessService> get_service(const std::string& name) const;
 
-    // 管理器访问
-    ServiceManager& service_manager() { return *sm_; }
-    ModeManager&    mode_manager()    { return *mm_; }
-    MonitorManager& monitor_manager() { return *mon_; }
+    // 管理器访问（实现在 .cpp）
+    ServiceManager& service_manager();
+    ModeManager&    mode_manager();
+    MonitorManager& monitor_manager();
+
+    // 心跳状态访问
+    HeartbeatMonitor& heartbeat_monitor();
+    HeartbeatState GetHeartbeatState(const std::string& name) const;
 
     // 网络服务
     bool start_tcp_server(const net::TcpConfig& cfg);
@@ -46,6 +61,7 @@ public:
 
 private:
     void load_network_config();
+    void init_heartbeat_monitor();
 
     std::string workspace_dir_;
     std::string config_dir_;
@@ -55,6 +71,8 @@ private:
     std::unique_ptr<ModeManager>    mm_;
     std::unique_ptr<MonitorManager> mon_;
     std::unique_ptr<DependencyManager> dm_;
+    std::unique_ptr<HeartbeatMonitor> hb_mon_;
+    std::unique_ptr<IHeartbeatSource> heartbeat_source_;
     std::unique_ptr<net::TcpServer> tcp_server_;
 };
 

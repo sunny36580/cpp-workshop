@@ -28,7 +28,8 @@ add_library(runtime_lib STATIC
     runtime/process/service_manager/service_manager.cpp
     runtime/process/dependency_manager/dependency_manager.cpp
     runtime/monitor/monitor_manager.cpp
-    runtime/monitor/detector/file_heartbeat_detector.cpp
+    runtime/monitor/heartbeat/heartbeat_monitor.cpp
+    runtime/service_access/service_access_manager.cpp
 )
 target_include_directories(runtime_lib PUBLIC .)
 target_link_libraries(runtime_lib PUBLIC common_lib pthread)
@@ -62,6 +63,27 @@ target_include_directories(gateway_lib PUBLIC .)
 target_link_libraries(gateway_lib PUBLIC orchestration_lib capability_lib)
 
 # --------------------------------------------------------------------------
+# Layer 5 — adapter_lib: 外部框架适配层（可选 ROS2）
+#   依赖: runtime_lib
+# --------------------------------------------------------------------------
+add_library(adapter_lib STATIC
+    adapter/ros2/ros2_heartbeat_source.cpp
+)
+target_include_directories(adapter_lib PUBLIC .)
+target_link_libraries(adapter_lib PUBLIC runtime_lib)
+
+# 如果找到 ROS2，链接 rclcpp
+find_package(rclcpp QUIET)
+if(rclcpp_FOUND)
+    target_include_directories(adapter_lib SYSTEM PUBLIC ${rclcpp_INCLUDE_DIRS})
+    target_link_libraries(adapter_lib PUBLIC ${rclcpp_LIBRARIES})
+    target_compile_definitions(adapter_lib PUBLIC HAS_ROS2=1)
+    message(STATUS "ROS2 found: adapter_lib will include ROS2 heartbeat source")
+else()
+    message(STATUS "ROS2 not found: adapter_lib built without ROS2 support")
+endif()
+
+# --------------------------------------------------------------------------
 # 主程序 — 组合所有层
 # --------------------------------------------------------------------------
 add_executable(robot
@@ -69,22 +91,16 @@ add_executable(robot
     gateway/cli/main.cpp
 )
 target_include_directories(robot PRIVATE .)
-target_link_libraries(robot PRIVATE gateway_lib)
+target_link_libraries(robot PRIVATE gateway_lib adapter_lib)
 
 # ============================================================================
 # Install — 库/可执行文件 + 服务目录（config/tools/脚本由顶层 CMakeLists 安装）
 # ============================================================================
 
-install(TARGETS robot runtime_lib orchestration_lib gateway_lib
+install(TARGETS robot runtime_lib orchestration_lib gateway_lib adapter_lib
     RUNTIME DESTINATION bin
     LIBRARY DESTINATION lib
     ARCHIVE DESTINATION lib
-)
-
-# 服务目录 — 整个拷贝（每个服务是一个完整 包 + start/stop.sh）
-install(DIRECTORY services/ DESTINATION services
-    PATTERN "*.pyc" EXCLUDE
-    PATTERN "__pycache__" EXCLUDE
 )
 
 # ============================================================================

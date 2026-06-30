@@ -4,12 +4,6 @@
 monitor:
   check_interval: 3.0
 
-  # ---- 文件心跳检测（监测业务进程是否卡死） ----
-  file_heartbeat:
-    enabled: true
-    dir: "/tmp/runtime_hb"
-    timeout_sec: 8.0
-
   detector:
     process:
       enabled: true
@@ -19,6 +13,16 @@ monitor:
       enabled: false
     serial:
       enabled: false
+
+  # ---- ROS2 心跳话题订阅源 ----
+  ros2_heartbeat:
+    enabled: false
+    topic_mapping:
+      # topic_name: service_name
+      - topic: "/heartbeat/motion"
+        service: "motion"
+      - topic: "/heartbeat/navigation"
+        service: "navigation"
 
   strategy:
     restart:

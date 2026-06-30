@@ -214,7 +214,7 @@ robot_runtime/
 │       │   └── gateway/
 │       ├── mock/
 │       └── integration/
-├── services/                   # 服务实现目录
+├── services/                   # 外部服务实现（ROS节点/Python/二进制）
 ├── tools/                      # 运维脚本
 └── log/                        # 运行时日志
 ```

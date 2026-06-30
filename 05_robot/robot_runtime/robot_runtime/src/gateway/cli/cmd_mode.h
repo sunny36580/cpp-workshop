@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/runtime.h"
+#include "orchestration/mode/mode_manager.h"
 
 #include <cstdio>
 #include <cstring>

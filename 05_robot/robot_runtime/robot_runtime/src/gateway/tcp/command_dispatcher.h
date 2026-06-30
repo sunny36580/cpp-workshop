@@ -2,6 +2,8 @@
 
 #include "gateway/tcp/protocol_parser.h"
 #include "runtime/process/service_manager/service_manager.h"
+#include "orchestration/mode/mode_manager.h"
+#include "runtime/monitor/monitor_manager.h"
 
 #include <cstdio>
 #include <string>

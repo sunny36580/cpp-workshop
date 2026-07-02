@@ -1,9 +1,67 @@
 #include "runtime/service_access/service_access_manager.h"
 
+#include <cstdio>
+
 namespace robot_runtime {
 
 ServiceAccessManager::ServiceAccessManager() = default;
 ServiceAccessManager::~ServiceAccessManager() { close_all(); }
+
+// =====================================================================
+// 能力调用（通过 IServiceClient 转发）
+// =====================================================================
+
+ServiceResult ServiceAccessManager::Activate(const std::string& service_name) {
+    auto* client = get_client(service_name);
+    if (!client) {
+        return ServiceResult::Error("no client for service: " + service_name);
+    }
+    return client->Activate(service_name);
+}
+
+ServiceResult ServiceAccessManager::Deactivate(const std::string& service_name) {
+    auto* client = get_client(service_name);
+    if (!client) {
+        return ServiceResult::Error("no client for service: " + service_name);
+    }
+    return client->Deactivate(service_name);
+}
+
+ServiceStateInfo ServiceAccessManager::GetState(const std::string& service_name) {
+    auto* client = get_client(service_name);
+    if (!client) {
+        ServiceStateInfo info;
+        info.service = service_name;
+        info.state = "unknown";
+        info.health = "unhealthy";
+        info.message = "no client registered";
+        return info;
+    }
+    return client->GetState(service_name);
+}
+
+// =====================================================================
+// 客户端注册
+// =====================================================================
+
+void ServiceAccessManager::register_client(const std::string& protocol_type,
+                                            std::unique_ptr<IServiceClient> client) {
+    if (!client) return;
+    printf("[ServiceAccessManager] register client: %s\n", protocol_type.c_str());
+    clients_[protocol_type] = std::move(client);
+}
+
+IServiceClient* ServiceAccessManager::get_client(const std::string& service_name) const {
+    // 通过 registry 查找服务的 type，再找到对应的 client
+    const auto* entry = registry_.find(service_name);
+    if (!entry || entry->capabilities.empty()) return nullptr;
+
+    // 用第一个 capability 的 protocol 作为 type
+    const auto& proto = entry->capabilities[0].protocol;
+    auto it = clients_.find(proto);
+    if (it != clients_.end()) return it->second.get();
+    return nullptr;
+}
 
 std::shared_ptr<ServiceProxy> ServiceAccessManager::get_proxy(const std::string& service_name) {
     auto it = proxies_.find(service_name);

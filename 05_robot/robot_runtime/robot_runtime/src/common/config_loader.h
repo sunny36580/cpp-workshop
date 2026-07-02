@@ -13,6 +13,30 @@ namespace robot_runtime {
 // 所有服务元信息统一放在 config/services.yaml 中，每个服务目录下不再维护
 // 独立的 service.yaml 文件，避免配置分散、信息不一致。
 // ============================================================================
+/// 服务生命周期策略
+enum class ServiceLifecycle {
+    Simple,     /// 基础：只有 start / stop（默认）
+    Managed,    /// 托管：支持 start / stop / activate / deactivate
+    External,   /// 外部：Runtime 只监控，不负责启动停止
+};
+
+inline const char* to_string(ServiceLifecycle lc) {
+    switch (lc) {
+        case ServiceLifecycle::Simple:   return "simple";
+        case ServiceLifecycle::Managed:  return "managed";
+        case ServiceLifecycle::External: return "external";
+    }
+    return "simple";
+}
+
+inline ServiceLifecycle parse_lifecycle(const YAML::Node& node) {
+    if (!node) return ServiceLifecycle::Simple;
+    auto val = node.as<std::string>("simple");
+    if (val == "managed")   return ServiceLifecycle::Managed;
+    if (val == "external")  return ServiceLifecycle::External;
+    return ServiceLifecycle::Simple;
+}
+
 struct ServiceConfig {
     std::string name;
     std::string path;
@@ -23,11 +47,25 @@ struct ServiceConfig {
     std::string log_path;
     std::vector<std::string> depends;
     bool auto_restart = false;
+    ServiceLifecycle lifecycle = ServiceLifecycle::Simple;
+};
+
+/// 模式下某个服务的目标状态
+enum class ModeTargetState {
+    Active,     /// 激活（process up + capability ready）
+    Inactive,   /// 停用（process up but capability suspended）
+    Stopped,    /// 停止（process down）
+};
+
+/// 模式下每个服务的预期状态
+struct ModeServiceEntry {
+    std::string name;
+    ModeTargetState target = ModeTargetState::Active;
 };
 
 struct ModeConfig {
     std::string name;
-    std::vector<std::string> services;
+    std::vector<ModeServiceEntry> services;
 };
 
 inline std::vector<ServiceConfig> parse_services(const std::string& filepath) {
@@ -46,6 +84,7 @@ inline std::vector<ServiceConfig> parse_services(const std::string& filepath) {
         cfg.pid_file    = entry.second["pid_file"].as<std::string>("");
         cfg.log_path    = entry.second["log_path"].as<std::string>("");
         cfg.auto_restart = entry.second["auto_restart"].as<bool>(false);
+        cfg.lifecycle   = parse_lifecycle(entry.second["lifecycle"]);
 
         if (entry.second["depends"]) {
             for (const auto& dep : entry.second["depends"]) {
@@ -73,11 +112,32 @@ inline std::pair<std::vector<ModeConfig>, std::string> parse_modes(const std::st
             default_mode = entry.second.as<std::string>();
             continue;
         }
+
         ModeConfig cfg;
         cfg.name = key;
-        for (const auto& svc : entry.second["services"]) {
-            cfg.services.push_back(svc.as<std::string>());
+
+        auto svcs = entry.second["services"];
+        if (svcs && svcs.IsMap()) {
+            // 新格式: service_name: target_state
+            for (const auto& kv : svcs) {
+                ModeServiceEntry e;
+                e.name   = kv.first.as<std::string>();
+                auto st  = kv.second.as<std::string>("active");
+                if (st == "inactive")  e.target = ModeTargetState::Inactive;
+                else if (st == "stopped") e.target = ModeTargetState::Stopped;
+                else e.target = ModeTargetState::Active;
+                cfg.services.push_back(std::move(e));
+            }
+        } else if (svcs && svcs.IsSequence()) {
+            // 兼容旧格式: [service1, service2] → 全部视为 active
+            for (const auto& item : svcs) {
+                ModeServiceEntry e;
+                e.name   = item.as<std::string>();
+                e.target = ModeTargetState::Active;
+                cfg.services.push_back(std::move(e));
+            }
         }
+
         result.push_back(std::move(cfg));
     }
     return {result, default_mode};

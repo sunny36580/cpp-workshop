@@ -1,0 +1,11 @@
+# 服务状态查询
+# 由 Runtime 的 Ros2ServiceClient 调用，查询目标服务当前状态
+
+string service_name    # 目标服务名称
+---
+string service_name    # 服务名称
+string state           # "running", "stopped", "activating", "deactivating"
+bool   ready           # 是否就绪
+bool   active          # 是否激活
+string health          # "healthy", "degraded", "unhealthy"
+string message         # 附加信息

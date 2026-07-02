@@ -1,0 +1,8 @@
+# 生命周期管理指令
+# 由 Runtime 的 Ros2ServiceClient 调用，向目标服务发送激活/停用指令
+
+string command         # "activate" 或 "deactivate"
+string service_name    # 目标服务名称
+---
+bool   success         # 是否成功
+string message         # 结果信息

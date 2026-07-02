@@ -1,7 +1,7 @@
 #!/bin/bash
 # ============================================================================
 # module_manager_hub — 模块管理器启动脚本
-# 同一进程内运行三个 node（ModuleManager + SerialJoyBridge + CameraStreamer）
+# 同一进程内运行：SerialJoyBridge + CameraStreamer
 # ============================================================================
 set -e
 

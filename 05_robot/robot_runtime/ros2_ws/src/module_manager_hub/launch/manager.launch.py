@@ -8,8 +8,9 @@ def generate_launch_description():
     config_path = os.path.join(pkg, 'config', 'modules.yaml')
 
     return LaunchDescription([
-        # 主进程（CameraStreamer + HeartbeatCollector，同一进程内）
-        # ModuleManager/SerialJoyBridge 阶段二启用
+        # 单一服务进程，内含 SerialJoyBridge + CameraStreamer
+        # lifecycle: /module_manager_hub/lifecycle
+        # heartbeat: /runtime/heartbeat
         Node(
             package='module_manager_hub',
             executable='module_manager_node',

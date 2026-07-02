@@ -14,24 +14,16 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(std_msgs REQUIRED)
-find_package(geometry_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(yaml-cpp REQUIRED)
-find_package(rosidl_default_generators REQUIRED)
 find_package(Boost REQUIRED COMPONENTS system)
+find_package(robot_runtime_ros2_interfaces REQUIRED)
 
 # OpenCV / FFmpeg 依赖（CameraStreamerCore 使用）
 find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs highgui)
 find_package(cv_bridge REQUIRED)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(FFMPEG REQUIRED libavcodec libavutil libswscale)
-
-# 生成消息
-rosidl_generate_interfaces(${PROJECT_NAME}
-  msg/Robotarmcontrol.msg
-  msg/Robotarmstatus.msg
-  DEPENDENCIES std_msgs
-)
 
 include_directories(include)
 
@@ -55,14 +47,12 @@ target_link_libraries(module_manager_core
 )
 
 # =====================================================================
-# 编译可执行文件：ROS Node 层（链接 core 库）
+# 编译可执行文件（单一服务，管理全进程）
 # =====================================================================
 add_executable(module_manager_node
   src/main.cpp
   src/ros/serial_joy_bridge_node.cpp
   src/ros/camera_streamer_node.cpp
-  src/ros/heartbeat_collector_node.cpp
-  src/ros/module_manager_node.cpp
 )
 
 ament_target_dependencies(module_manager_node
@@ -70,15 +60,12 @@ ament_target_dependencies(module_manager_node
   std_msgs
   sensor_msgs
   cv_bridge
+  robot_runtime_ros2_interfaces
 )
 
 target_link_libraries(module_manager_node
   module_manager_core
 )
-
-# 让 rosidl 生成的消息头文件可以被 module_manager_node 找到
-rosidl_get_typesupport_target(cpp_typesupport_target ${PROJECT_NAME} "rosidl_typesupport_cpp")
-target_link_libraries(module_manager_node "${cpp_typesupport_target}")
 
 # =====================================================================
 # 纯 C++ 单测可执行文件（无 ROS 依赖，仅链接 core 库）

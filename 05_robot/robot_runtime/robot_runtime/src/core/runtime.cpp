@@ -1,10 +1,12 @@
 #include "core/runtime.h"
 #include "adapter/ros2/ros2_heartbeat_source.h"
+#include "adapter/ros2/ros2_service_client.h"
 #include "orchestration/mode/mode_manager.h"
 #include "runtime/monitor/monitor_manager.h"
 #include "runtime/monitor/heartbeat/heartbeat_monitor.h"
 #include "runtime/monitor/heartbeat/i_heartbeat_source.h"
 #include "runtime/process/dependency_manager/dependency_manager.h"
+#include "runtime/service_access/service_access_manager.h"
 #include "gateway/tcp/tcp_server.h"
 
 #include <cstdio>
@@ -53,12 +55,38 @@ bool Runtime::init() {
         dm_->add_dependency(name, svc->depends());
     }
 
+    // 初始化服务访问管理器 + 注册协议适配器
+    svc_access_ = std::make_unique<ServiceAccessManager>();
+    {
+        // 将所有已加载的服务注册到 registry（适配器用 type 字段选择协议）
+        for (const auto& [name, svc] : sm_->services()) {
+            ServiceEntry entry;
+            entry.service_name = name;
+            entry.service_type = svc->config().type;
+            entry.alive = false;
+            ServiceCapability cap;
+            cap.name = "lifecycle";
+            cap.protocol = svc->config().type;
+            entry.capabilities.push_back(std::move(cap));
+            svc_access_->registry().register_service(std::move(entry));
+        }
+#ifdef HAS_ROS2
+        svc_access_->register_client("ros2", std::make_unique<Ros2ServiceClient>());
+        printf("[Runtime] registered ROS2 service client\n");
+#else
+        printf("[Runtime] ROS2 not available, service clients disabled\n");
+#endif
+    }
+
     // 加载监控配置（含文件心跳检测）
     mon_->load_config(config_dir_ + "/monitor.yaml");
     mon_->start();
 
     // 初始化心跳监控（纯内存状态机，无文件/ROS 依赖）
     init_heartbeat_monitor();
+
+    // 应用默认模式（按 modes.yaml 启动对应服务）
+    mm_->apply_default();
 
     printf("[Runtime] initialized\n");
 
@@ -117,10 +145,11 @@ void Runtime::serve() {
     }
 }
 
-ServiceManager& Runtime::service_manager() { return *sm_; }
-ModeManager&    Runtime::mode_manager()    { return *mm_; }
-MonitorManager& Runtime::monitor_manager() { return *mon_; }
-HeartbeatMonitor& Runtime::heartbeat_monitor() { return *hb_mon_; }
+ServiceManager&      Runtime::service_manager()    { return *sm_; }
+ModeManager&         Runtime::mode_manager()       { return *mm_; }
+MonitorManager&      Runtime::monitor_manager()    { return *mon_; }
+HeartbeatMonitor&    Runtime::heartbeat_monitor()  { return *hb_mon_; }
+ServiceAccessManager& Runtime::service_access()    { return *svc_access_; }
 
 // =====================================================================
 // 服务 / 模式管控（转发到各 Manager）

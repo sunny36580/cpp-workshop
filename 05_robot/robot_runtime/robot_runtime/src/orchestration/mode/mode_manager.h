@@ -5,6 +5,8 @@
 #include <unordered_map>
 #include <memory>
 
+#include "common/config_loader.h"
+
 namespace robot_runtime {
 
 class ServiceManager;
@@ -24,7 +26,7 @@ public:
 private:
     std::string config_dir_;
     ServiceManager* sm_ = nullptr;
-    std::unordered_map<std::string, std::vector<std::string>> modes_;
+    std::unordered_map<std::string, std::vector<ModeServiceEntry>> modes_;
     std::string current_mode_;
     std::string default_mode_ = "standby";
 };

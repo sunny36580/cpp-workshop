@@ -44,10 +44,6 @@ SerialJoyBridgeNode::SerialJoyBridgeNode(const std::string &name,
       std::bind(&SerialJoyBridgeNode::onSerialData, this,
                 std::placeholders::_1, std::placeholders::_2));
 
-  // 打开串口
-  if (!serial_reader_.open(serial_port_, serial_baud_)) {
-    RCLCPP_ERROR(this->get_logger(), "串口打开失败: %s", serial_port_.c_str());
-  }
 }
 
 SerialJoyBridgeNode::~SerialJoyBridgeNode()
@@ -57,6 +53,8 @@ SerialJoyBridgeNode::~SerialJoyBridgeNode()
 
 void SerialJoyBridgeNode::onSerialData(const uint8_t *data, size_t len)
 {
+  if (!active_.load()) return;  // 停用状态下不发布输出
+
   auto frames = joy_core_.feedData(data, len);
 
   for (const auto& frame : frames) {

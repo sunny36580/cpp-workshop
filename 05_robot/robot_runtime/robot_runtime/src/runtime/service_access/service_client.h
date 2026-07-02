@@ -13,6 +13,9 @@ struct ServiceResult {
     bool success = false;
     std::string error_msg;
     std::vector<uint8_t> payload;  // 响应数据
+
+    static ServiceResult Ok() { return {true, "", {}}; }
+    static ServiceResult Error(std::string msg) { return {false, std::move(msg), {}}; }
 };
 
 /// 服务客户端接口

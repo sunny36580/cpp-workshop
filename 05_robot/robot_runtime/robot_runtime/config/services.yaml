@@ -2,6 +2,11 @@
 # Robot Runtime — Service 注册配置
 # ============================================================================
 # 所有服务元信息统一在此管理，每个服务目录下不再维护独立的 service.yaml。
+#
+# lifecycle 取值:
+#   always_on  常驻服务，不受模式切换影响，初始化后自动启动
+#   mode_active 模式控制服务，跟随当前模式启停（默认）
+#   on_demand  按需服务，仅被动启动，模式切换不自动管理
 # ============================================================================
 
 services:
@@ -13,3 +18,4 @@ services:
     launch_cmd: ros2 launch module_manager_hub manager.launch.py
     depends: []
     auto_restart: false
+    lifecycle: simple

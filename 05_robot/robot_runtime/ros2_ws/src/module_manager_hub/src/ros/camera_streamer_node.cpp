@@ -14,8 +14,6 @@ CameraStreamerNode::CameraStreamerNode(const std::string& node_name,
   this->declare_parameter<int>("bitrate", 3000);
 
   image_topic_ = this->get_parameter("image_topic").as_string();
-  int port      = this->get_parameter("port").as_int();
-  int bitrate   = this->get_parameter("bitrate").as_int();
 
   // 设置 Core 层日志回调
   core_.setLogCallback(
@@ -31,17 +29,14 @@ CameraStreamerNode::CameraStreamerNode(const std::string& node_name,
       image_topic_, rclcpp::SensorDataQoS(),
       std::bind(&CameraStreamerNode::imageCallback, this, std::placeholders::_1));
 
-  // 初始化编码器和 TCP server
+  // 启动推流（active_ 控制是否实际推数据）
+  int port    = this->get_parameter("port").as_int();
+  int bitrate = this->get_parameter("bitrate").as_int();
   core_.initEncoder(640, 480, bitrate);
   core_.initTcpServer(port);
-
-  // 启动推流线程
   auto ok_check = [this]() { return rclcpp::ok(); };
   stream_thread_ = std::thread(&CameraStreamerCore::streamLoop, &core_,
                                 std::ref(running_), ok_check);
-
-  RCLCPP_INFO(this->get_logger(), "✅ 推流节点启动  topic=%s  port=%d  H.264",
-              image_topic_.c_str(), port);
 }
 
 CameraStreamerNode::~CameraStreamerNode()
@@ -52,6 +47,8 @@ CameraStreamerNode::~CameraStreamerNode()
 
 void CameraStreamerNode::imageCallback(const sensor_msgs::msg::Image::SharedPtr msg)
 {
+  if (!active_.load()) return;  // 停用时丢掉图像，streamLoop 无新帧可推
+
   try {
     auto cv_ptr = cv_bridge::toCvCopy(msg, "bgr8");
     core_.setFrame(cv_ptr->image);

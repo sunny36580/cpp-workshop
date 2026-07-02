@@ -30,17 +30,10 @@ bool ModeManager::load_config(const std::string& modes_yaml) {
         return false;
     }
 
-    for (const auto& entry : modes_cfg) {
-        auto key = entry.first.as<std::string>();
-        if (key == "default") {
-            default_mode_ = entry.second.as<std::string>();
-            continue;
-        }
-        std::vector<std::string> services;
-        for (const auto& svc : entry.second["services"]) {
-            services.push_back(svc.as<std::string>());
-        }
-        modes_[key] = std::move(services);
+    auto [mode_configs, def] = parse_modes(full_path);
+    default_mode_ = def;
+    for (auto& mc : mode_configs) {
+        modes_[mc.name] = std::move(mc.services);
     }
 
     printf("[ModeManager] loaded %zu modes (default=%s)\n",
@@ -55,46 +48,76 @@ bool ModeManager::switch_to(const std::string& mode_name) {
         return false;
     }
 
-    const auto& target_services = it->second;
+    const auto& target_entries = it->second;
     printf("[ModeManager] switching to mode [%s]\n", mode_name.c_str());
 
-    std::unordered_set<std::string> target_set(target_services.begin(), target_services.end());
-    bool has_all = target_set.count("all") > 0;
-
-    std::unordered_set<std::string> current_set;
-    if (!current_mode_.empty()) {
-        auto cur_it = modes_.find(current_mode_);
-        if (cur_it != modes_.end()) {
-            current_set = std::unordered_set<std::string>(
-                cur_it->second.begin(), cur_it->second.end());
+    // ---- 构造当前模式的目标状态索引 ----
+    // 每个条目包含服务名 + 目标状态 (active/inactive/stopped)
+    std::unordered_map<std::string, ModeTargetState> target_map;
+    bool has_all = false;
+    for (const auto& entry : target_entries) {
+        if (entry.name == "all") {
+            has_all = true;
+            break;
         }
+        target_map[entry.name] = entry.target;
     }
 
+    // ---- 计算 diff ----
+    // 只管理 lifecycle != External 的服务
+    auto is_managed = [this](const std::string& name) -> bool {
+        auto svc = sm_->get(name);
+        if (!svc) return true;
+        return svc->config().lifecycle != ServiceLifecycle::External;
+    };
+
+    // 停止：当前在 target_map 中不存在 或 目标为 stopped 的服务
     std::vector<std::string> to_stop;
-    for (const auto& s : current_set) {
-        if (!target_set.count(s) && !has_all) {
-            to_stop.push_back(s);
-        }
-    }
-
-    std::vector<std::string> to_start;
-    if (has_all) {
-        for (const auto& [name, _] : sm_->services()) {
-            to_start.push_back(name);
-        }
-    } else {
-        for (const auto& s : target_set) {
-            if (!current_set.count(s)) {
-                to_start.push_back(s);
+    if (!has_all) {
+        for (const auto& [name, svc] : sm_->services()) {
+            if (!is_managed(name)) continue;
+            auto tit = target_map.find(name);
+            if (tit == target_map.end() || tit->second == ModeTargetState::Stopped) {
+                if (svc->state() != ServiceState::STOPPED) {
+                    to_stop.push_back(name);
+                }
             }
         }
     }
 
-    for (const auto& name : to_stop) sm_->stop(name);
-    for (const auto& name : to_start) sm_->start(name);
+    // 启动：目标为 active/inactive 且当前未运行的服务
+    std::vector<std::string> to_start;
+    if (has_all) {
+        for (const auto& [name, svc] : sm_->services()) {
+            if (is_managed(name) && svc->state() != ServiceState::RUNNING) {
+                to_start.push_back(name);
+            }
+        }
+    } else {
+        for (const auto& [name, target] : target_map) {
+            if (!is_managed(name)) continue;
+            if (target == ModeTargetState::Stopped) continue;
+            auto svc = sm_->get(name);
+            if (!svc || svc->state() != ServiceState::RUNNING) {
+                to_start.push_back(name);
+            }
+        }
+    }
+
+    // 执行
+    if (!to_stop.empty()) {
+        printf("[ModeManager]  stopping %zu services\n", to_stop.size());
+        for (const auto& name : to_stop) sm_->stop(name);
+    }
+    if (!to_start.empty()) {
+        printf("[ModeManager]  starting %zu services\n", to_start.size());
+        for (const auto& name : to_start) sm_->start(name);
+    }
 
     current_mode_ = mode_name;
-    printf("[ModeManager] switched to mode [%s]\n", mode_name.c_str());
+    int kept = static_cast<int>(target_map.size()) - static_cast<int>(to_start.size());
+    printf("[ModeManager] mode [%s] applied (started=%d, stopped=%zu)\n",
+           mode_name.c_str(), static_cast<int>(to_start.size()), to_stop.size());
     return true;
 }
 

@@ -4,35 +4,42 @@
 # Mode 定义了机器人的运行模式，切换模式时自动启停相关服务。
 # ============================================================================
 
+# ============================================================================
+# Robot Runtime — Mode 配置
+# ============================================================================
+# 定义每个模式下服务的预期目标状态：
+#   active     激活（进程运行 + 能力就绪）
+#   inactive   停用（进程运行但能力挂起）
+#   stopped    停止（进程关闭）
+# ============================================================================
+
 modes:
 
   # ---- 待机模式 ----
   # 只有基础运控
   standby:
     services:
-      - motion
+      motion: active
 
   # ---- 遥控模式 ----
   # 运控 + 图传 + 遥控
   teleop:
     services:
-      - motion
-      - remote_control
+      motion: active
+      remote_control: active
 
   # ---- 交互模式 ----
-  # 对话 + 表情 + 手势（全部开启）
+  # 对话 + 表情 + 手势
   interaction:
     services:
-      - motion
-      - conversation
-      # - face
-      # - gesture
+      motion: active
+      conversation: active
 
   # ---- 调试模式 ----
   # 启动全部服务
   debug:
     services:
-      - all
+      all: active
 
   # ---- 默认模式 ----
   default: teleop

@@ -30,6 +30,7 @@ add_library(runtime_lib STATIC
     runtime/monitor/monitor_manager.cpp
     runtime/monitor/heartbeat/heartbeat_monitor.cpp
     runtime/service_access/service_access_manager.cpp
+    runtime/service_access/service_registry.cpp
 )
 target_include_directories(runtime_lib PUBLIC .)
 target_link_libraries(runtime_lib PUBLIC common_lib pthread)
@@ -68,17 +69,37 @@ target_link_libraries(gateway_lib PUBLIC orchestration_lib capability_lib)
 # --------------------------------------------------------------------------
 add_library(adapter_lib STATIC
     adapter/ros2/ros2_heartbeat_source.cpp
+    adapter/ros2/ros2_service_client.cpp
 )
 target_include_directories(adapter_lib PUBLIC .)
 target_link_libraries(adapter_lib PUBLIC runtime_lib)
 
-# 如果找到 ROS2，链接 rclcpp
+# 如果找到 ROS2，链接 rclcpp + ROS2 接口包
 find_package(rclcpp QUIET)
 if(rclcpp_FOUND)
     target_include_directories(adapter_lib SYSTEM PUBLIC ${rclcpp_INCLUDE_DIRS})
     target_link_libraries(adapter_lib PUBLIC ${rclcpp_LIBRARIES})
     target_compile_definitions(adapter_lib PUBLIC HAS_ROS2=1)
     message(STATUS "ROS2 found: adapter_lib will include ROS2 heartbeat source")
+
+    # ROS2 接口包 (msg/srv)
+    find_package(rosidl_default_generators QUIET)
+    if(rosidl_default_generators_FOUND)
+        add_subdirectory(interfaces/ros2/robot_runtime_ros2_interfaces)
+        # rosidl 生成多个目标，需要 generator + typesupport 才能链接
+        if(TARGET robot_runtime_ros2_interfaces__rosidl_generator_cpp AND
+           TARGET robot_runtime_ros2_interfaces__rosidl_typesupport_cpp)
+            target_link_libraries(adapter_lib PUBLIC
+                robot_runtime_ros2_interfaces__rosidl_generator_cpp
+                robot_runtime_ros2_interfaces__rosidl_typesupport_cpp)
+            target_compile_definitions(adapter_lib PUBLIC HAS_ROS2_INTERFACES=1)
+            message(STATUS "ROS2 interfaces linked: LifecycleCommand.srv, Heartbeat.msg")
+        else()
+            message(STATUS "ROS2 interfaces target not found, disabling")
+        endif()
+    else()
+        message(STATUS "rosidl_default_generators not found, ROS2 interfaces disabled")
+    endif()
 else()
     message(STATUS "ROS2 not found: adapter_lib built without ROS2 support")
 endif()

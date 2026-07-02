@@ -16,6 +16,7 @@ class MonitorManager;
 class DependencyManager;
 class HeartbeatMonitor;
 class IHeartbeatSource;
+class ServiceAccessManager;
 
 namespace net {
 struct TcpConfig;
@@ -55,6 +56,9 @@ public:
     HeartbeatMonitor& heartbeat_monitor();
     HeartbeatState GetHeartbeatState(const std::string& name) const;
 
+    // 服务能力调用
+    ServiceAccessManager& service_access();
+
     // 网络服务
     bool start_tcp_server(const net::TcpConfig& cfg);
     void serve();  // 阻塞，保持进程常驻
@@ -73,6 +77,7 @@ private:
     std::unique_ptr<DependencyManager> dm_;
     std::unique_ptr<HeartbeatMonitor> hb_mon_;
     std::unique_ptr<IHeartbeatSource> heartbeat_source_;
+    std::unique_ptr<ServiceAccessManager> svc_access_;
     std::unique_ptr<net::TcpServer> tcp_server_;
 };
 

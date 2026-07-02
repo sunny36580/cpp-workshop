@@ -7,7 +7,11 @@
 // 的 std::sqrt 歧义问题（rclcpp 内部 using namespace std 与 robot_runtime 命名空间冲突）
 #ifdef HAS_ROS2
 #include <rclcpp/rclcpp.hpp>
+#ifdef HAS_ROS2_INTERFACES
+#include <robot_runtime_ros2_interfaces/msg/heartbeat.hpp>
+#else
 #include <std_msgs/msg/string.hpp>
+#endif
 #endif
 
 namespace robot_runtime {
@@ -22,22 +26,33 @@ public:
     Impl(HeartbeatMonitor* monitor) : monitor_(monitor) {}
 
     bool Start(const std::vector<std::string>& topics) {
+        (void)topics;
         if (!rclcpp::ok()) {
             fprintf(stderr, "[Ros2HeartbeatSource] ROS2 未初始化\n");
             return false;
         }
 
         node_ = std::make_shared<rclcpp::Node>("heartbeat_source");
+        const std::string hb_topic = "/runtime/heartbeat";
 
+#ifdef HAS_ROS2_INTERFACES
+        // 所有服务共用 /runtime/heartbeat 话题，按 msg.service_name 区分
+        auto sub = node_->create_subscription<robot_runtime_ros2_interfaces::msg::Heartbeat>(
+            hb_topic, 10,
+            [this](const robot_runtime_ros2_interfaces::msg::Heartbeat::SharedPtr msg) {
+                if (!monitor_ || msg->service_name.empty()) return;
+                monitor_->OnHeartbeat({msg->service_name, msg->timestamp});
+            });
+        subs_.push_back(sub);
+        printf("[Ros2HeartbeatSource] 订阅: %s (Heartbeat.msg)\n", hb_topic.c_str());
+#else
+        // 降级：按旧格式 topic/service 订阅 std_msgs::String
         for (const auto& entry : topics) {
-            // 格式: "topic_name/service_name"
             auto sep = entry.find('/');
             if (sep == std::string::npos || sep == 0 || sep == entry.size() - 1) {
-                fprintf(stderr, "[Ros2HeartbeatSource] 无效格式: %s (期望 topic/service)\n",
-                        entry.c_str());
+                fprintf(stderr, "[Ros2HeartbeatSource] 无效格式: %s\n", entry.c_str());
                 continue;
             }
-
             std::string topic_name = entry.substr(0, sep);
             std::string service_name = entry.substr(sep + 1);
 
@@ -52,11 +67,11 @@ public:
                                + static_cast<double>(ts.tv_nsec) / 1e9;
                     monitor_->OnHeartbeat({service_name, now});
                 });
-
             subs_.push_back(sub);
-            printf("[Ros2HeartbeatSource] 订阅: %s → %s\n",
+            printf("[Ros2HeartbeatSource] 订阅: %s → %s (std_msgs::String, fallback)\n",
                    topic_name.c_str(), service_name.c_str());
         }
+#endif
 
         spin_thread_ = std::thread([this]() {
             while (spinning_) {
@@ -78,7 +93,7 @@ public:
 private:
     HeartbeatMonitor* monitor_ = nullptr;
     rclcpp::Node::SharedPtr node_;
-    std::vector<rclcpp::Subscription<std_msgs::msg::String>::SharedPtr> subs_;
+    std::vector<rclcpp::SubscriptionBase::SharedPtr> subs_;
     std::thread spin_thread_;
     std::atomic<bool> spinning_{true};
 };

@@ -146,7 +146,7 @@ TEST(ConfigLoaderTest, ParseValidModes) {
     EXPECT_EQ(default_mode, "teleop");
     EXPECT_EQ(modes[0].name, "standby");
     EXPECT_EQ(modes[0].services.size(), 1);
-    EXPECT_EQ(modes[0].services[0], "motion");
+    EXPECT_EQ(modes[0].services[0].name, "motion");
 
     std::remove(path.c_str());
     std::remove(tmp_dir);

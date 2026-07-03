@@ -1,14 +1,17 @@
+/**
+ * @file runtime.h
+ * @brief Runtime 主类，组合所有管控层
+ * @role core
+ */
 #pragma once
 
 #include <string>
 #include <memory>
 #include <vector>
 
-// 值类型数据结构（轻量，必须 include 以支持返回值）
 #include "runtime/process/service_manager/service_manager.h"   // ServiceStatus, ProcessService
 #include "runtime/monitor/heartbeat/heartbeat_state.h"          // HeartbeatState
 
-// 前向声明 — 所有具体实现类只在 .cpp 中 include
 namespace robot_runtime {
 class ServiceManager;
 class ModeManager;
@@ -21,8 +24,13 @@ class ServiceAccessManager;
 namespace net {
 struct TcpConfig;
 class TcpServer;
-} // namespace net
+}
 
+/**
+ * @class Runtime
+ * @brief 管控系统组合根，初始化并协调所有管理器
+ * @responsibility 服务/模式/监控/心跳/网络全生命周期管理
+ */
 class Runtime {
 public:
     Runtime(std::string workspace_dir,
@@ -30,36 +38,51 @@ public:
             std::string log_dir);
     ~Runtime();
 
+    /**
+     * @brief 初始化所有管理器并加载配置
+     * @return true=成功
+     */
     bool init();
 
-    // 服务管控
+    /**
+     * @brief 启动服务
+     * @param name 服务名
+     * @return true=成功
+     */
     bool start_service(const std::string& name);
     bool stop_service(const std::string& name);
     bool restart_service(const std::string& name);
     void start_all();
     void stop_all();
 
-    // 模式管控
+    /**
+     * @brief 切换模式
+     * @param mode_name 目标模式
+     * @return true=成功
+     */
     bool switch_mode(const std::string& mode_name);
     void apply_default_mode();
 
-    // 查询
+    /**
+     * @brief 获取所有服务状态
+     * @return 服务状态列表
+     */
     std::vector<ServiceStatus> all_status() const;
     std::shared_ptr<ProcessService> get_service(const std::string& name) const;
 
-    // 管理器访问（实现在 .cpp）
     ServiceManager& service_manager();
     ModeManager&    mode_manager();
     MonitorManager& monitor_manager();
 
-    // 心跳状态访问
     HeartbeatMonitor& heartbeat_monitor();
     HeartbeatState GetHeartbeatState(const std::string& name) const;
 
-    // 服务能力调用
+    /**
+     * @brief 获取服务访问管理器
+     * @return 服务访问管理器引用
+     */
     ServiceAccessManager& service_access();
 
-    // 网络服务
     bool start_tcp_server(const net::TcpConfig& cfg);
     void serve();  // 阻塞，保持进程常驻
 
@@ -67,9 +90,9 @@ private:
     void load_network_config();
     void init_heartbeat_monitor();
 
-    std::string workspace_dir_;
-    std::string config_dir_;
-    std::string log_dir_;
+    std::string workspace_dir_;  // 工作目录
+    std::string config_dir_;     // 配置文件目录
+    std::string log_dir_;        // 日志输出目录
 
     std::unique_ptr<ServiceManager> sm_;
     std::unique_ptr<ModeManager>    mm_;

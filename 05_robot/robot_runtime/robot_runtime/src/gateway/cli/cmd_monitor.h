@@ -1,3 +1,8 @@
+/**
+ * @file cmd_monitor.h
+ * @brief 监控 CLI 命令
+ * @role gateway/cli
+ */
 #pragma once
 
 #include "core/runtime.h"

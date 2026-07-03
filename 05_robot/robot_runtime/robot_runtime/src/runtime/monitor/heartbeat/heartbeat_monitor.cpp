@@ -7,14 +7,10 @@
 
 namespace robot_runtime {
 
-// =====================================================================
 // 析构
-// =====================================================================
 HeartbeatMonitor::~HeartbeatMonitor() { Stop(); }
 
-// =====================================================================
 // 配置
-// =====================================================================
 void HeartbeatMonitor::AddTarget(const HeartbeatTarget& target)
 {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -31,9 +27,7 @@ void HeartbeatMonitor::AddTargets(const std::vector<HeartbeatTarget>& targets)
     for (const auto& t : targets) AddTarget(t);
 }
 
-// =====================================================================
 // 生命周期
-// =====================================================================
 void HeartbeatMonitor::Start()
 {
     if (running_.exchange(true)) return;
@@ -48,9 +42,7 @@ void HeartbeatMonitor::Stop()
     printf("[HeartbeatMonitor] stopped\n");
 }
 
-// =====================================================================
 // 事件输入
-// =====================================================================
 void HeartbeatMonitor::OnHeartbeat(const HeartbeatEvent& event)
 {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -66,9 +58,7 @@ void HeartbeatMonitor::OnHeartbeat(const HeartbeatEvent& event)
     }
 }
 
-// =====================================================================
 // 状态查询
-// =====================================================================
 HeartbeatState HeartbeatMonitor::GetState(const std::string& service_name) const
 {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -101,9 +91,7 @@ std::vector<HeartbeatState> HeartbeatMonitor::GetTimeoutServices() const
     return result;
 }
 
-// =====================================================================
 // 内部
-// =====================================================================
 void HeartbeatMonitor::SetStatus(const std::string& name, HeartbeatStatus new_status,
                                   InnerState& st, double now)
 {

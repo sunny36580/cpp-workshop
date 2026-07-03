@@ -1,3 +1,8 @@
+/**
+ * @file service_proxy.h
+ * @brief 服务代理（封装 ServiceClient）
+ * @role runtime/service_access
+ */
 #pragma once
 
 #include <string>
@@ -8,10 +13,11 @@
 
 namespace robot_runtime {
 
-/// 服务代理
-/// 对 ServiceClient 的封装，提供类型安全的接口。
-/// runtime 上层通过 ServiceProxy 调用外部服务，不直接感知通信协议。
-/// adapter 层的具体实现（ROS/TCP/AimRT）负责协议转换。
+/**
+ * @class ServiceProxy
+ * @brief 服务代理，封装 ServiceClient
+ * @responsibility 提供 report_heartbeat/send_command/query_status 等类型安全接口
+ */
 class ServiceProxy {
 public:
     using StateCallback = std::function<void(const std::string& service, bool online)>;

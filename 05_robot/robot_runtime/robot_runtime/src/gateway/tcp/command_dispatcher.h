@@ -1,3 +1,8 @@
+/**
+ * @file command_dispatcher.h
+ * @brief 指令分发器
+ * @role gateway/tcp
+ */
 #pragma once
 
 #include "gateway/tcp/protocol_parser.h"
@@ -14,9 +19,7 @@ class Runtime;
 
 namespace robot_runtime::net {
 
-// ============================================================================
 // 工具：打包服务状态列表为二进制格式
-// ============================================================================
 inline std::vector<uint8_t> pack_service_status_list(
     const std::vector<ServiceStatus>& statuses) {
     std::vector<uint8_t> data;
@@ -49,12 +52,12 @@ inline std::vector<uint8_t> pack_service_status_list(
     return data;
 }
 
-// ============================================================================
-// CommandDispatcher — 指令分发层
-// ============================================================================
-// 将网络协议指令映射到 Runtime 管理器接口，完全复用现有管控逻辑。
-// 和本地 CLI 属于同一层级的入口，无逻辑割裂。
-// ============================================================================
+
+/**
+ * @class CommandDispatcher
+ * @brief 指令分发器
+ * @responsibility 将网络协议指令映射到 Runtime 管理器接口，完全复用现有管控逻辑;和本地 CLI 属于同一层级的入口，无逻辑割裂。
+ */
 class CommandDispatcher {
 public:
     explicit CommandDispatcher(Runtime& runtime)

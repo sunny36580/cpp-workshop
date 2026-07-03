@@ -1,3 +1,8 @@
+/**
+ * @file process_utils.h
+ * @brief 进程工具函数
+ * @role common
+ */
 #pragma once
 
 #include <string>

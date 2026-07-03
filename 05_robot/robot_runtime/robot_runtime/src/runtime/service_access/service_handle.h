@@ -1,3 +1,8 @@
+/**
+ * @file service_handle.h
+ * @brief 服务句柄
+ * @role runtime/service_access
+ */
 #pragma once
 
 #include <string>

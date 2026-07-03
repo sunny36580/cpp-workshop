@@ -1,3 +1,8 @@
+/**
+ * @file ros2_service_client.h
+ * @brief ROS2 服务能力调用适配器
+ * @role adapter/ros2
+ */
 #pragma once
 
 #include <memory>
@@ -7,18 +12,6 @@
 
 namespace robot_runtime {
 
-/// ROS2 服务能力调用客户端
-///
-/// 实现 IServiceClient 接口，通过 ROS2 service 调用目标服务的生命周期接口。
-///
-/// 默认推导 ROS2 service 名称：
-///   Activate(service)   → /{service}/lifecycle (LifecycleCommand.srv)
-///   Deactivate(service) → /{service}/lifecycle
-///   GetState(service)   → /{service}/get_state  (GetServiceState.srv)
-///
-/// 编译条件：
-///   - HAS_ROS2=1：实际调用 ROS2 service
-///   - 否则：桩实现，仅日志提示
 class Ros2ServiceClient : public IServiceClient {
 public:
     Ros2ServiceClient();

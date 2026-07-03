@@ -1,3 +1,8 @@
+/**
+ * @file i_service_client.h
+ * @brief 服务能力调用抽象接口
+ * @role runtime/service_access
+ */
 #pragma once
 
 #include <string>
@@ -6,7 +11,6 @@
 
 namespace robot_runtime {
 
-/// 统一服务状态
 struct ServiceStateInfo {
     std::string service;
     std::string state;      // "running", "stopped", "activating", "deactivating"

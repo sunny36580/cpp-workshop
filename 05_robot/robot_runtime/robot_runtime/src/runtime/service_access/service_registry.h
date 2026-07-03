@@ -1,3 +1,8 @@
+/**
+ * @file service_registry.h
+ * @brief 服务注册表
+ * @role runtime/service_access
+ */
 #pragma once
 
 #include <string>
@@ -24,40 +29,57 @@ struct ServiceEntry {
     bool alive = false;                // 是否在线
 };
 
-/// 服务注册表
-/// 集中管理所有可访问的服务及其能力描述。
-/// 由 ServiceAccessManager 初始化，支持动态注册/发现。
+/**
+ * @class ServiceRegistry
+ * @brief 服务注册表
+ * @responsibility 管理所有可访问的服务及其能力描述
+ */
 class ServiceRegistry {
 public:
     using EntryCallback = std::function<void(const ServiceEntry&)>;
 
-    /// 注册一个服务条目
+    /** @brief 注册一个服务条目 */
     void register_service(const ServiceEntry& entry);
     void register_service(ServiceEntry&& entry);
 
-    /// 注销服务
+    /** @brief 注销服务 */
     void unregister_service(const std::string& service_name);
 
-    /// 按名称查找服务
+    /**
+     * @brief 按名称查找服务
+     * @return 找到返回指针，未找到返回 nullptr
+     */
     const ServiceEntry* find(const std::string& service_name) const;
 
-    /// 按能力查询服务
+    /**
+     * @brief 按能力查询服务
+     * @param cap_name 能力名称
+     * @return 匹配的服务列表
+     */
     std::vector<const ServiceEntry*> find_by_capability(const std::string& cap_name) const;
 
-    /// 按协议类型查询
+    /**
+     * @brief 按协议类型查询
+     * @param protocol 协议类型
+     * @return 匹配的服务列表
+     */
     std::vector<const ServiceEntry*> find_by_protocol(const std::string& protocol) const;
 
-    /// 列出全部已注册服务
+    /**
+     * @brief 列出全部已注册服务
+     * @return 全部服务列表
+     */
     std::vector<const ServiceEntry*> all() const;
 
-    /// 更新服务在线状态
+    /**
+     * @brief 更新服务在线状态
+     * @param service_name 服务名
+     * @param alive 是否在线
+     */
     void update_alive(const std::string& service_name, bool alive);
 
-    /// 注册/注销监听
     void set_on_registered(EntryCallback cb)   { on_registered_ = std::move(cb); }
     void set_on_unregistered(EntryCallback cb) { on_unregistered_ = std::move(cb); }
-
-    /// 清空
     void clear();
 
 private:

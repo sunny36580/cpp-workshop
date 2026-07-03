@@ -1,3 +1,8 @@
+/**
+ * @file service_client.h
+ * @brief 服务调用客户端接口
+ * @role runtime/service_access
+ */
 #pragma once
 
 #include <string>
@@ -8,7 +13,7 @@
 
 namespace robot_runtime {
 
-/// 服务调用结果
+/** @brief 服务调用结果 */
 struct ServiceResult {
     bool success = false;
     std::string error_msg;

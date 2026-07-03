@@ -1,3 +1,8 @@
+/**
+ * @file service_access_manager.h
+ * @brief 服务访问管理器
+ * @role runtime/service_access
+ */
 #pragma once
 
 #include <string>
@@ -10,37 +15,50 @@
 
 namespace robot_runtime {
 
-/// 服务访问管理器
-///
-/// 统一管理 runtime 对外部服务的访问上下文：
-///   - 服务能力调用 (Activate/Deactivate/GetState)
-///   - 服务注册与发现
-///   - 代理创建与销毁
-///
-/// 不直接依赖具体通信协议；根据服务 type 自动选择对应的 IServiceClient 实现。
+/**
+ * @class ServiceAccessManager
+ * @brief 服务访问管理器
+ * @responsibility 根据服务 type 选择适配器，转发 Activate/Deactivate/GetState
+ */
 class ServiceAccessManager {
 public:
     ServiceAccessManager();
     ~ServiceAccessManager();
 
-    // ---- 能力调用（适配器转发） ----
-
-    /// 激活服务能力（通过对应协议的 IServiceClient 调用）
+    /**
+     * @brief 激活服务能力
+     * @param service_name 服务名
+     * @return 调用结果
+     */
     ServiceResult Activate(const std::string& service_name);
 
-    /// 停用服务能力
+    /**
+     * @brief 停用服务能力
+     * @param service_name 服务名
+     * @return 调用结果
+     */
     ServiceResult Deactivate(const std::string& service_name);
 
-    /// 查询服务状态
+    /**
+     * @brief 查询服务状态
+     * @param service_name 服务名
+     * @return 状态信息
+     */
     ServiceStateInfo GetState(const std::string& service_name);
 
-    // ---- 客户端注册 ----
-
-    /// 注册一个协议适配器（如 Ros2ServiceClient）
+    /**
+     * @brief 注册协议适配器
+     * @param protocol_type 协议类型(ros2/tcp/aimrt)
+     * @param client 适配器实例
+     */
     void register_client(const std::string& protocol_type,
                          std::unique_ptr<IServiceClient> client);
 
-    /// 根据服务名获取对应协议的客户端
+    /**
+     * @brief 根据服务名获取对应协议的客户端
+     * @param service_name 服务名
+     * @return 客户端指针，未找到返回 nullptr
+     */
     IServiceClient* get_client(const std::string& service_name) const;
 
     // ---- 代理管理 ----

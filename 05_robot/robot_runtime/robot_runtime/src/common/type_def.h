@@ -1,3 +1,8 @@
+/**
+ * @file type_def.h
+ * @brief 通用类型定义
+ * @role common
+ */
 #pragma once
 
 #include <string>

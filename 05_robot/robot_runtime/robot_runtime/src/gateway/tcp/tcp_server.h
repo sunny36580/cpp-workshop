@@ -1,3 +1,8 @@
+/**
+ * @file tcp_server.h
+ * @brief TCP 远程管控服务端
+ * @role gateway/tcp
+ */
 #pragma once
 
 #include "gateway/tcp/protocol_parser.h"
@@ -17,11 +22,12 @@ class Runtime;
 
 namespace robot_runtime::net {
 
-// ============================================================================
-// TcpServer — TCP 远程管控服务端
-// ============================================================================
-// 内嵌在 Runtime 进程中，接收远程客户端指令，转发到 CommandDispatcher。
-// ============================================================================
+
+/**
+ * @class TcpConfig
+ * @brief TCP 服务配置
+ * @responsibility 配置 TCP 服务端的监听地址、端口、鉴权 token 等参数
+ */
 struct TcpConfig {
     bool     enabled      = true;
     uint16_t port         = 9527;
@@ -30,6 +36,12 @@ struct TcpConfig {
     int      timeout_ms   = 5000;
     int      max_clients  = 4;
 };
+
+/**
+ * @class TcpServer
+ * @brief TCP 远程管控服务端
+ * @responsibility 管理 TCP 连接，处理客户端请求
+ */
 
 class TcpServer {
 public:

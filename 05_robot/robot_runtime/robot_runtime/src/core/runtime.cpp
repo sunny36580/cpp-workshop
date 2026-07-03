@@ -33,6 +33,10 @@ Runtime::~Runtime() {
     if (mon_) mon_->stop();
 }
 
+/**
+ * @brief 初始化所有管理器并加载配置
+ * @return true=初始化成功
+ */
 bool Runtime::init() {
     fs::create_directories(log_dir_);
     fs::create_directories(log_dir_ + "/services");
@@ -123,6 +127,11 @@ void Runtime::load_network_config() {
     }
 }
 
+/**
+ * @brief 启动 TCP 远程管控服务
+ * @param cfg TCP 配置
+ * @return true=启动成功
+ */
 bool Runtime::start_tcp_server(const net::TcpConfig& cfg) {
     tcp_server_ = std::make_unique<net::TcpServer>(*this, cfg);
     if (!tcp_server_->start()) {
@@ -242,6 +251,11 @@ void Runtime::init_heartbeat_monitor() {
     }
 }
 
+/**
+
+ * @return 指定服务心跳状态
+
+ */
 HeartbeatState Runtime::GetHeartbeatState(const std::string& name) const {
     if (hb_mon_) return hb_mon_->GetState(name);
     return {name, HeartbeatStatus::Offline, 0.0, 8.0};

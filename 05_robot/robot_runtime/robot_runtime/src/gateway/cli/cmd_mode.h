@@ -1,3 +1,8 @@
+/**
+ * @file cmd_mode.h
+ * @brief 模式管理 CLI 命令
+ * @role gateway/cli
+ */
 #pragma once
 
 #include "core/runtime.h"

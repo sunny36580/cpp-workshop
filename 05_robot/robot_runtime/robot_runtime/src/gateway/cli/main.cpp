@@ -1,17 +1,3 @@
-/**
- * Robot Runtime — 命令行入口
- *
- * 用法:
- *   robot list               列出所有服务及描述
- *   robot status [service]   查看服务状态
- *   robot start <service>    启动服务
- *   robot stop <service>     停止服务
- *   robot restart <service>  重启服务
- *   robot mode list          列出所有模式
- *   robot mode switch <mode> 切换模式
- *   robot up                 启动默认模式
- *   robot down               停止所有服务
- */
 #include "core/runtime.h"
 #include "gateway/cli/cmd_service.h"
 #include "gateway/cli/cmd_mode.h"

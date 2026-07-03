@@ -1,3 +1,8 @@
+/**
+ * @file ros2_heartbeat_source.h
+ * @brief ROS2 心跳订阅适配器
+ * @role adapter/ros2
+ */
 #pragma once
 
 #include <memory>
@@ -10,14 +15,6 @@ namespace robot_runtime {
 
 class HeartbeatMonitor;
 
-/// ROS2 心跳事件源
-///
-/// 实现 IHeartbeatSource 接口，订阅 ROS2 心跳话题，
-/// 将收到的消息转换为 HeartbeatEvent 送入 HeartbeatMonitor。
-///
-/// 编译条件：
-///   - HAS_ROS2=1 时：链接 rclcpp，实际订阅话题
-///   - 否则：空实现，仅日志提示
 class Ros2HeartbeatSource : public IHeartbeatSource {
 public:
     explicit Ros2HeartbeatSource(HeartbeatMonitor* monitor);

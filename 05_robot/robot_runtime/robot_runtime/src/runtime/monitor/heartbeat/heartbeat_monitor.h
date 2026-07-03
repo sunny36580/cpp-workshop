@@ -1,3 +1,8 @@
+/**
+ * @file heartbeat_monitor.h
+ * @brief 纯内存心跳状态机
+ * @role runtime/monitor/heartbeat
+ */
 #pragma once
 
 #include "runtime/monitor/heartbeat/heartbeat_event.h"
@@ -15,65 +20,70 @@
 
 namespace robot_runtime {
 
-/// 心跳状态变化回调
 using HeartbeatStatusCallback = std::function<void(const HeartbeatState& state)>;
 
-/// 心跳监控器 —— 纯状态机，无 I/O 无 ROS 依赖
-///
-/// 职责：
-///   1. 注册被监控服务（AddTarget）
-///   2. 接收心跳事件更新状态（OnHeartbeat）
-///   3. 定时检查超时（Start 启动后台线程）
-///   4. 状态变化时触发回调
-///
-/// 不负责：
-///   - 订阅 ROS2 话题
-///   - 写文件
-///   - UDP 上报
-///   - 服务重启决策
+/**
+ * @class HeartbeatMonitor
+ * @brief 心跳状态机，无 IO 无 ROS 依赖
+ * @responsibility 接收心跳事件、超时检测、状态变化回调
+ */
 class HeartbeatMonitor {
 public:
     HeartbeatMonitor() = default;
     ~HeartbeatMonitor();
 
-    // ---- 配置 ----
-
-    /// 添加被监控服务
+    /**
+     * @brief 注册被监控服务
+     * @param target 监控目标
+     */
     void AddTarget(const HeartbeatTarget& target);
-
-    /// 批量添加
+    /**
+     * @brief 批量注册监控目标
+     * @param targets 监控目标列表
+     */
     void AddTargets(const std::vector<HeartbeatTarget>& targets);
-
-    /// 设置全局超时阈值（秒，对未指定 timeout 的 target 生效）
+    /**
+     * @brief 设置全局默认超时阈值
+     * @param sec 超时秒数
+     */
     void SetDefaultTimeoutSec(double sec) { default_timeout_sec_ = sec; }
 
-    // ---- 生命周期 ----
-
-    /// 启动后台超时检测线程
+    /**
+     * @brief 启动后台超时检测线程
+     */
     void Start();
-
-    /// 停止后台线程
+    /**
+     * @brief 停止后台线程
+     */
     void Stop();
 
-    // ---- 事件输入 ----
-
-    /// 收到一条心跳事件（由适配器调用）
+    /**
+     * @brief 收到一条心跳事件
+     * @param event 心跳事件
+     */
     void OnHeartbeat(const HeartbeatEvent& event);
 
-    // ---- 状态查询 ----
-
-    /// 获取指定服务状态
+    /**
+     * @brief 获取指定服务心跳状态
+     * @param service_name 服务名
+     * @return 心跳状态快照
+     */
     HeartbeatState GetState(const std::string& service_name) const;
-
-    /// 获取所有服务状态
+    /**
+     * @brief 获取所有服务心跳状态
+     * @return 全部状态列表
+     */
     std::vector<HeartbeatState> GetAllStates() const;
-
-    /// 获取当前所有超时服务
+    /**
+     * @brief 获取超时服务列表
+     * @return 超时服务列表
+     */
     std::vector<HeartbeatState> GetTimeoutServices() const;
 
-    // ---- 回调 ----
-
-    /// 设置状态变化回调（Online↔Timeout 切换时触发）
+    /**
+     * @brief 设置状态变化回调
+     * @param cb Online/Timeout 切换时触发
+     */
     void SetStatusCallback(HeartbeatStatusCallback cb) { status_cb_ = std::move(cb); }
 
 private:
@@ -88,14 +98,9 @@ private:
     void SetStatus(const std::string& name, HeartbeatStatus new_status,
                    InnerState& st, double now);
 
-    // 配置
-    double default_timeout_sec_ = 8.0;
-
-    // 状态表
-    std::map<std::string, InnerState> states_;
+    double default_timeout_sec_ = 8.0;    // 默认超时阈值(秒)
+    std::map<std::string, InnerState> states_;  // 服务名→心跳状态
     mutable std::mutex mutex_;
-
-    // 后台线程
     std::atomic<bool> running_{false};
     std::thread check_thread_;
 

@@ -1,14 +1,21 @@
+/**
+ * @file heartbeat_state.h
+ * @brief 心跳状态类型
+ * @role runtime/monitor/heartbeat
+ */
 #pragma once
 
 #include <string>
 
 namespace robot_runtime {
 
-/// 服务在线状态枚举
+/**
+ * @brief 服务在线状态
+ */
 enum class HeartbeatStatus {
-    Offline,    /// 从未收到心跳或已标记离线
-    Online,     /// 最近收到心跳，未超时
-    Timeout,    /// 超过 timeout_sec 未收到心跳
+    Offline,
+    Online,
+    Timeout,
 };
 
 inline const char* to_string(HeartbeatStatus s) {

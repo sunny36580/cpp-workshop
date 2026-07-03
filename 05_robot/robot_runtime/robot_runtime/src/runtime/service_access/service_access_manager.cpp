@@ -7,10 +7,7 @@ namespace robot_runtime {
 ServiceAccessManager::ServiceAccessManager() = default;
 ServiceAccessManager::~ServiceAccessManager() { close_all(); }
 
-// =====================================================================
 // 能力调用（通过 IServiceClient 转发）
-// =====================================================================
-
 ServiceResult ServiceAccessManager::Activate(const std::string& service_name) {
     auto* client = get_client(service_name);
     if (!client) {
@@ -40,10 +37,7 @@ ServiceStateInfo ServiceAccessManager::GetState(const std::string& service_name)
     return client->GetState(service_name);
 }
 
-// =====================================================================
 // 客户端注册
-// =====================================================================
-
 void ServiceAccessManager::register_client(const std::string& protocol_type,
                                             std::unique_ptr<IServiceClient> client) {
     if (!client) return;

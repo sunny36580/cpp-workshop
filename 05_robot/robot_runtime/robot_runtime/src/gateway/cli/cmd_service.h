@@ -1,3 +1,8 @@
+/**
+ * @file cmd_service.h
+ * @brief 服务管理 CLI 命令
+ * @role gateway/cli
+ */
 #pragma once
 
 #include "core/runtime.h"

@@ -1,3 +1,8 @@
+/**
+ * @file protocol_parser.h
+ * @brief TCP 二进制协议解析
+ * @role gateway/tcp
+ */
 #pragma once
 
 #include <cstdint>
@@ -8,9 +13,7 @@
 
 namespace robot_runtime::net {
 
-// ============================================================================
 // 指令类型
-// ============================================================================
 enum CommandType : uint16_t {
     // 服务管控
     CMD_SERVICE_START   = 0x0001,
@@ -37,12 +40,10 @@ enum CommandType : uint16_t {
     CMD_AUTH      = 0xFF02,
 };
 
-// ============================================================================
 // 二进制帧结构
 // ============================================================================
 //  帧头(2) | 版本(1) | 指令(2) | 长度(2) | 数据体(N) | 校验(1) | 帧尾(2)
 //   AA55   |   01    |  XXXX   |  NNNN   |  ......   |  CRC    |  0D0A
-// ============================================================================
 static constexpr uint8_t  FRAME_HEADER1    = 0xAA;
 static constexpr uint8_t  FRAME_HEADER2    = 0x55;
 static constexpr uint8_t  FRAME_FOOTER1    = 0x0D;
@@ -63,18 +64,14 @@ enum ResponseCode : uint8_t {
     RESP_INVALID  = 0x05,
 };
 
-// ============================================================================
 // 请求包
-// ============================================================================
 struct RequestPacket {
     uint8_t  version = PROTOCOL_VERSION;
     uint16_t cmd     = 0;
     std::vector<uint8_t> data;
 };
 
-// ============================================================================
 // 响应包
-// ============================================================================
 struct ResponsePacket {
     uint8_t  version = PROTOCOL_VERSION;
     uint16_t cmd     = 0;       // 回显请求指令
@@ -82,9 +79,7 @@ struct ResponsePacket {
     std::vector<uint8_t> data;  // 返回数据
 };
 
-// ============================================================================
 // CRC8 校验（多项式 x^8 + x^2 + x + 1）
-// ============================================================================
 inline uint8_t crc8(const uint8_t* buf, size_t len) {
     uint8_t crc = 0;
     for (size_t i = 0; i < len; ++i) {
@@ -97,9 +92,7 @@ inline uint8_t crc8(const uint8_t* buf, size_t len) {
     return crc;
 }
 
-// ============================================================================
 // 打包请求帧
-// ============================================================================
 inline std::vector<uint8_t> pack_request(const RequestPacket& req) {
     size_t data_len = req.data.size();
     std::vector<uint8_t> frame(FRAME_HEADER_SIZE + 2 + data_len + FRAME_FOOTER_SIZE);
@@ -127,9 +120,7 @@ inline std::vector<uint8_t> pack_request(const RequestPacket& req) {
     return frame;
 }
 
-// ============================================================================
 // 打包响应帧
-// ============================================================================
 inline std::vector<uint8_t> pack_response(const ResponsePacket& resp) {
     size_t data_len = resp.data.size();
     std::vector<uint8_t> frame(FRAME_HEADER_SIZE + 2 + 1 + data_len + FRAME_FOOTER_SIZE);
@@ -159,10 +150,8 @@ inline std::vector<uint8_t> pack_response(const ResponsePacket& resp) {
     return frame;
 }
 
-// ============================================================================
 // 解析一帧（从字节流中提取完整帧）
 // 返回值：>0 表示解析成功，帧长度；0 表示需要更多数据；<0 表示格式错误
-// ============================================================================
 inline int parse_frame(const uint8_t* buf, size_t buf_len,
                        RequestPacket& out_req) {
     if (buf_len < FRAME_MIN_SIZE) return 0;
@@ -210,9 +199,7 @@ inline int parse_frame(const uint8_t* buf, size_t buf_len,
     return static_cast<int>(total_len);
 }
 
-// ============================================================================
 // 工具：字符串 ↔ 字节向量
-// ============================================================================
 inline std::vector<uint8_t> to_bytes(const std::string& s) {
     return std::vector<uint8_t>(s.begin(), s.end());
 }

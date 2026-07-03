@@ -1,3 +1,8 @@
+/**
+ * @file auth_manager.h
+ * @brief TCP 鉴权管理
+ * @role gateway/tcp
+ */
 #pragma once
 
 #include <string>

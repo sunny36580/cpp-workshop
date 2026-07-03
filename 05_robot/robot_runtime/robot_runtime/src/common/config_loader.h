@@ -1,3 +1,8 @@
+/**
+ * @file config_loader.h
+ * @brief YAML 配置解析
+ * @role common
+ */
 #pragma once
 
 #include <string>
@@ -7,17 +12,11 @@
 
 namespace robot_runtime {
 
-// ============================================================================
-// ServiceConfig — 服务注册配置（来自 config/services.yaml）
-// ============================================================================
-// 所有服务元信息统一放在 config/services.yaml 中，每个服务目录下不再维护
-// 独立的 service.yaml 文件，避免配置分散、信息不一致。
-// ============================================================================
-/// 服务生命周期策略
+/** @brief 服务生命周期策略 */
 enum class ServiceLifecycle {
-    Simple,     /// 基础：只有 start / stop（默认）
-    Managed,    /// 托管：支持 start / stop / activate / deactivate
-    External,   /// 外部：Runtime 只监控，不负责启动停止
+    Simple,
+    Managed,
+    External,
 };
 
 inline const char* to_string(ServiceLifecycle lc) {

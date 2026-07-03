@@ -27,7 +27,6 @@ TcpServer::~TcpServer() {
     stop();
 }
 
-// ---------------------------------------------------------------------------
 bool TcpServer::start() {
     if (running_.exchange(true)) return true;
 
@@ -77,7 +76,6 @@ bool TcpServer::start() {
     return true;
 }
 
-// ---------------------------------------------------------------------------
 void TcpServer::stop() {
     if (!running_.exchange(false)) return;
 
@@ -101,7 +99,6 @@ void TcpServer::stop() {
     printf("[TcpServer] stopped\n");
 }
 
-// ---------------------------------------------------------------------------
 void TcpServer::serve() {
     if (!start()) return;
     printf("[TcpServer] serving forever (Ctrl+C to stop)\n");
@@ -112,7 +109,6 @@ void TcpServer::serve() {
     }
 }
 
-// ---------------------------------------------------------------------------
 void TcpServer::acceptor_loop() {
     CommandDispatcher dispatcher(runtime_);
 
@@ -141,7 +137,6 @@ void TcpServer::acceptor_loop() {
     }
 }
 
-// ---------------------------------------------------------------------------
 void TcpServer::client_session(int client_fd) {
     CommandDispatcher dispatcher(runtime_);
     std::vector<uint8_t> read_buf(READ_BUF_SIZE);

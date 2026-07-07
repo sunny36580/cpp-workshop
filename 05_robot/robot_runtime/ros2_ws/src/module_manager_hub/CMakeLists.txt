@@ -20,12 +20,13 @@ find_package(Boost REQUIRED COMPONENTS system)
 find_package(robot_runtime_ros2_interfaces REQUIRED)
 
 # OpenCV / FFmpeg 依赖（CameraStreamerCore 使用）
-find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs highgui)
-find_package(cv_bridge REQUIRED)
+# 注意：不显式 find_package/link OpenCV，由模块内部转化绕开版本冲突。
+# OpenCV 头文件路径取标准位置（ROS2 Humble apt 安装路径）。
 find_package(PkgConfig REQUIRED)
+pkg_check_modules(OPENCV REQUIRED opencv4)
 pkg_check_modules(FFMPEG REQUIRED libavcodec libavutil libswscale)
 
-include_directories(include)
+include_directories(include /usr/include/opencv4)
 
 # =====================================================================
 # 编译静态库：纯业务逻辑（无 ROS 依赖）
@@ -38,11 +39,13 @@ add_library(module_manager_core STATIC
   src/core/module_manager_core.cpp
 )
 
-target_include_directories(module_manager_core PRIVATE ${FFMPEG_INCLUDE_DIRS})
+target_include_directories(module_manager_core PRIVATE 
+  ${FFMPEG_INCLUDE_DIRS}
+  /usr/include/opencv4
+)
 target_link_libraries(module_manager_core
   yaml-cpp
   ${Boost_LIBRARIES}
-  ${OpenCV_LIBRARIES}
   ${FFMPEG_LIBRARIES}
 )
 
@@ -59,12 +62,12 @@ ament_target_dependencies(module_manager_node
   rclcpp
   std_msgs
   sensor_msgs
-  cv_bridge
   robot_runtime_ros2_interfaces
 )
 
 target_link_libraries(module_manager_node
   module_manager_core
+  ${OPENCV_LIBRARIES}
 )
 
 # =====================================================================
@@ -78,7 +81,7 @@ target_link_libraries(test_joy_bridge_core module_manager_core)
 add_executable(test_camera_streamer_core
   test/test_camera_streamer_core.cpp
 )
-target_link_libraries(test_camera_streamer_core module_manager_core)
+target_link_libraries(test_camera_streamer_core module_manager_core ${OPENCV_LIBRARIES})
 
 add_executable(test_heartbeat_core
   test/test_heartbeat_core.cpp

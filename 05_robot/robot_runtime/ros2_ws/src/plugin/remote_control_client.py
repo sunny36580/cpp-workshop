@@ -1,23 +1,26 @@
-import json
-import pygame
+"""
+⚠️ 此文件已被拆分为 remote_control/ 包。
+
+请使用以下方式运行：
+    python -m remote_control.main
+
+旧入口（本文件）仍保留为向后兼容 shim：
+    python remote_control_client.py
+"""
+
 import sys
-import time
-import serial
-import socket
-import threading
-import numpy as np
-import io
-from enum import Enum
-import websockets.sync.client
+import os
 
-# ====================== 基础配置 ======================
-LINEAR_SPEED_MAX = 0.6   # 运控节点线速度上限 (m/s)
-ANGULAR_SPEED_MAX = 1.0  # 运控节点角速度上限 (rad/s)
-CMD_SEND_RATE = 7       # 运动指令发送频率(Hz)
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-# 相机推流配置
-CAMERA_IP = "192.168.9.253"   # 机端IP地址
-CAMERA_PORT = 8888             # TCP 推流端口
+from remote_control.robot_remote import RobotRemote
+
+if __name__ == "__main__":
+    print("========== 三代人形机器人远程控制系统 ==========")
+    print("ℹ️  代码已重构，建议使用: python -m remote_control.main")
+    print("================================================")
+    app = RobotRemote()
+    app.run()
 
 # 串口配置（与 C++ 模块管理器一致）
 # Windows 下 CH340 通常是 COM3，改为: SERIAL_PORT = "COM3"

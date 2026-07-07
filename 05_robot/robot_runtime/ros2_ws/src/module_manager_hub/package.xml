@@ -16,7 +16,7 @@
   <depend>libopencv-dev</depend>
   <depend>sensor_msgs</depend>
   <depend>robot_runtime_ros2_interfaces</depend>
-  <depend>cv_bridge</depend>
+
   <depend>libavcodec-dev</depend>
   <depend>libavutil-dev</depend>
   <depend>libswscale-dev</depend>

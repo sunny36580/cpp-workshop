@@ -1,5 +1,4 @@
 #include "module_manager_hub/ros/camera_streamer_node.h"
-#include <cv_bridge/cv_bridge.h>
 #include <opencv2/opencv.hpp>
 #include <sensor_msgs/msg/image.hpp>
 
@@ -49,11 +48,16 @@ void CameraStreamerNode::imageCallback(const sensor_msgs::msg::Image::SharedPtr 
 {
   if (!active_.load()) return;  // 停用时丢掉图像，streamLoop 无新帧可推
 
-  try {
-    auto cv_ptr = cv_bridge::toCvCopy(msg, "bgr8");
-    core_.setFrame(cv_ptr->image);
-  } catch (cv_bridge::Exception &e) {
+  // 手动将 ROS Image 转为 cv::Mat，不依赖 cv_bridge
+  if (msg->encoding == "bgr8" || msg->encoding == "rgb8") {
+    cv::Mat frame(msg->height, msg->width, CV_8UC3,
+                  const_cast<uint8_t*>(msg->data.data()), msg->step);
+    if (msg->encoding == "rgb8") {
+      cv::cvtColor(frame, frame, cv::COLOR_RGB2BGR);
+    }
+    core_.setFrame(frame);
+  } else {
     RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
-                         "cv_bridge failed: %s", e.what());
+                         "不支持的图像编码: %s", msg->encoding.c_str());
   }
 }

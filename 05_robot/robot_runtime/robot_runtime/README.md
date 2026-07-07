@@ -70,6 +70,24 @@ behavior/     行为编排（预留）
 plugins/      插件分类（预留）
 ```
 
+### 通信协议
+
+```
+┌─────────────────────────┐      Topic (/runtime/heartbeat)      ┌──────────────────┐
+│  外部服务 (ROS 节点等)   │ ──────────────────────────────────→  │  Runtime          │
+│                         │      Heartbeat.msg (定时上报)         │  Ros2HeartbeatSource
+│                         │                                      │       ↓           │
+│                         │ ←─ Service (/{name}/lifecycle) ────  │  HeartbeatMonitor │
+│                         │      LifecycleCommand.srv            │       ↓           │
+│                         │      (activate/deactivate)           │  ModeManager      │
+│                         │                                      │       ↓           │
+│                         │ ←─ Service (/{name}/get_state) ────  │  ServiceAccessMgr │
+│                         │      GetServiceState.srv             │  Ros2ServiceClient│
+└─────────────────────────┘                                      └──────────────────┘
+```
+
+接口定义见 `src/interfaces/ros2/robot_runtime_ros2_interfaces/`。
+
 ## 快速开始
 
 ### 构建
@@ -141,6 +159,7 @@ services:
     type: ros2
     depends: []
     auto_restart: false
+    lifecycle: simple          # simple / managed / external
 ```
 
 每个服务目录需要包含 `start.sh`（启动入口），可选 `stop.sh`（停止钩子）。
@@ -149,11 +168,14 @@ services:
 
 ```yaml
 modes:
-  standby:     { services: [motion] }
-  teleop:      { services: [motion, remote_control] }
-  interaction: { services: [motion, conversation] }
-  debug:       { services: [all] }
-  default: teleop
+  idle:
+    services:
+      module_manager_hub: active      # active / inactive / stopped
+  auto:
+    services:
+      module_manager_hub: active
+      navigation: active
+  default: idle
 ```
 
 ## 测试
@@ -246,6 +268,12 @@ robot_runtime/
 ├── setup.bash / local_setup.bash   # 环境设置
 ├── config/                         # YAML 配置文件
 ├── 3rd_party/                      # 第三方依赖
+├── services/                       # 外部服务实现（ROS节点/Python/二进制）
+│   └── module_manager_hub/
+│       ├── start.sh / stop.sh      # 启停脚本
+│       ├── setup.sh                # colcon 生成的环境
+│       └── module_manager_hub/     # ROS2 包（share/lib）
+├── ros2_ws/                        # ROS2 工作空间
 ├── src/
 │   ├── CMakeLists.txt              # 分层编译配置
 │   ├── common/                     # 公共基础 (header-only)
@@ -256,23 +284,25 @@ robot_runtime/
 │   ├── orchestration/mode/         # 模式编排
 │   ├── runtime/
 │   │   ├── process/
-│   │   │   ├── service_manager/    # 进程服务启停
+│   │   │   ├── service_manager/    # 进程级服务启停
 │   │   │   └── dependency_manager/ # 依赖拓扑排序
 │   │   ├── monitor/
-│   │   │   └── heartbeat/          # 心跳状态机 + IHeartbeatSource 接口
-│   │   └── service_access/         # 服务注册、代理、调用
+│   │   │   └── heartbeat/          # 心跳状态机 + IHeartbeatSource
+│   │   └── service_access/         # 服务注册、代理、能力调用
 │   ├── adapter/
-│   │   ├── ros2/                   # ROS2 心跳订阅适配器
+│   │   ├── ros2/                   # ROS2 心跳订阅 + 服务调用
 │   │   ├── tcp/                    # 预留
 │   │   ├── aimrt/                  # 预留
 │   │   └── python/                 # 预留
+│   ├── interfaces/ros2/            # ROS2 msg/srv 接口定义
+│   │   └── robot_runtime_ros2_interfaces/
+│   │       ├── msg/Heartbeat.msg
+│   │       ├── msg/ServiceState.msg
+│   │       ├── srv/LifecycleCommand.srv
+│   │       └── srv/GetServiceState.srv
 │   └── tests/
-│       ├── unit/
-│       │   ├── runtime/
-│       │   ├── orchestration/
-│       │   └── common/
-│       └── integration/stage0/     # 阶段 0 集成测试（含 fake service）
-├── services/                       # 外部服务实现（ROS节点/Python/二进制）
+│       ├── unit/                   # 单元测试（29 用例）
+│       └── integration/stage0/     # 阶段 0 集成测试（18 用例，含 fake service）
 ├── tools/                          # 运维脚本
 └── log/                            # 运行时日志
 ```

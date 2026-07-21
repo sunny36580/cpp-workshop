@@ -1,0 +1,4 @@
+# ========== 串口摇杆桥接配置 ==========
+serial:
+  port: "/dev/ttyUSB0"
+  baud_rate: 115200
